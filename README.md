@@ -1,4 +1,6 @@
-# iOxide
+![iOxide](assets/iOxide-banner.png)
+
+# <img src="assets/iOxide-logo.png" width="32" height="32" align="left" alt=""> iOxide
 
 A CalDAV bridge exposing Proton Calendar, built specifically to sync a real
 Proton account into iOS's native Calendar app (hence the name).
