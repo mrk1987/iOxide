@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
@@ -220,6 +221,7 @@ func isMbox(br *bufio.Reader) (bool, error) {
 const usage = `usage: ioxide [options...] <command>
 Commands:
 	auth <username>		Login to ProtonMail via ioxide
+	import-session <username>	Seed auth from an existing logged-in Proton web session (skips login/CAPTCHA)
 	carddav			Run ioxide as a CardDAV server
 	caldav			Run ioxide as a CalDAV server
 	export-secret-keys <username> Export secret keys
@@ -436,6 +438,78 @@ func main() {
 		}
 
 		fmt.Println("Bridge password:", bridgePassword)
+	case "import-session":
+		// Seed ioxide from a session that already exists in a logged-in Proton
+		// web tab, instead of performing a fresh login. Avoids the interactive
+		// login (and its CAPTCHA gate) entirely by reusing credentials the
+		// browser already holds.
+		//
+		// Ported from mathewcsims/protoxide (commit 1064101) — see README
+		// lineage notes. Adapted to go through our EncryptAndSave/auth.json
+		// atomic-write path (patch 6) rather than a raw write.
+		username := flag.Arg(1)
+		if username == "" {
+			log.Fatal("usage: ioxide import-session <username>")
+		}
+
+		c := newClient()
+
+		reader := bufio.NewReader(os.Stdin)
+		readLine := func(prompt string) string {
+			fmt.Print(prompt)
+			s, _ := reader.ReadString('\n')
+			return strings.TrimSpace(s)
+		}
+
+		fmt.Println("Paste session values captured from a logged-in Proton web session:")
+		uid := readLine("  UID (x-pm-uid header): ")
+		accessToken := readLine("  Access token (Authorization bearer value, no 'Bearer '): ")
+		refreshToken := readLine("  Refresh token (optional; enables auto-renewal): ")
+		if uid == "" || accessToken == "" {
+			log.Fatal("UID and access token are both required")
+		}
+
+		mailboxPass, err := askPass("Mailbox password")
+		if err != nil {
+			log.Fatal(err)
+		}
+		mailboxPassword := string(mailboxPass)
+
+		c.SetSession(uid, accessToken)
+
+		// Verify the session is live and fetch the key salts we must persist.
+		keySalts, err := c.ListKeySalts()
+		if err != nil {
+			log.Fatalf("session check failed (is the access token still current?): %v", err)
+		}
+
+		a := &protonmail.Auth{
+			UID:          uid,
+			AccessToken:  accessToken,
+			RefreshToken: refreshToken,
+			PasswordMode: protonmail.PasswordSingle,
+		}
+
+		if _, err := c.Unlock(a, keySalts, mailboxPassword); err != nil {
+			log.Fatalf("failed to unlock keys with mailbox password: %v", err)
+		}
+
+		secretKey, bridgePassword, err := auth.GeneratePassword()
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := auth.EncryptAndSave(&auth.CachedAuth{
+			Auth:            *a,
+			MailboxPassword: mailboxPassword,
+			KeySalts:        keySalts,
+		}, username, secretKey); err != nil {
+			log.Fatal(err)
+		}
+
+		fmt.Println("Session imported. Bridge password:", bridgePassword)
+		if refreshToken == "" {
+			fmt.Println("Note: no refresh token provided — the session will stop working when the access token expires, and you'll need to import again.")
+		}
 	case "status":
 		usernames, err := auth.ListUsernames()
 		if err != nil {
