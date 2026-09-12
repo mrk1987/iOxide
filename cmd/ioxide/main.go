@@ -344,12 +344,34 @@ func main() {
 				loginPassword = string(pass)
 			}
 
-			authInfo, err := c.AuthInfo(username)
-			if err != nil {
-				log.Fatal(err)
+			// login performs one full AuthInfo+Auth round trip. Wrapped in a
+			// closure so it can be retried once, with a human-verification
+			// token attached, if Proton gates the first attempt with a 9001.
+			//
+			// Human-verification retry ported from mathewcsims/protoxide
+			// (commit 731f77c) — see README lineage notes. This is a fallback:
+			// the -app-version flag (see defaultAppVersion above) is still the
+			// first line of defense against the CAPTCHA gate, since it avoids
+			// needing a browser at all. This exists for when that stops working.
+			login := func() (*protonmail.Auth, error) {
+				authInfo, err := c.AuthInfo(username)
+				if err != nil {
+					return nil, err
+				}
+				return c.Auth(username, loginPassword, authInfo)
 			}
 
-			a, err = c.Auth(username, loginPassword, authInfo)
+			a, err = login()
+			if apiErr, ok := err.(*protonmail.APIError); ok && apiErr.Code == 9001 && apiErr.HV != nil {
+				fmt.Printf("Human verification methods offered: %v\n", apiErr.HV.HumanVerificationMethods)
+				token, tokenType, solveErr := solveHumanVerification(apiErr.HV)
+				if solveErr != nil {
+					log.Fatal(solveErr)
+				}
+				c.SetHumanVerification(token, tokenType)
+				a, err = login()
+				c.ClearHumanVerification()
+			}
 			if err != nil {
 				log.Fatal(err)
 			}
