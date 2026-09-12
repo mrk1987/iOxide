@@ -1,112 +1,78 @@
-# hydroxide
+# iOxide
 
-A third-party, open-source ProtonMail bridge. For power users only, designed to
-run on a server.
+A CalDAV bridge exposing Proton Calendar, built specifically to sync a real
+Proton account into iOS's native Calendar app (hence the name).
 
-hydroxide supports CardDAV, CalDAV, IMAP and SMTP.
+## Lineage
 
-Rationale:
+`emersion/hydroxide` → CalDAV support added by `zCri/hydroxide` (never merged
+upstream, [PR #282](https://github.com/emersion/hydroxide/pull/282)) → this
+fork. `emersion/hydroxide` was archived (read-only) 2026-08-02, so this is now
+the actively-patched line rather than a fork awaiting upstream merge.
 
-* No GUI, only a CLI (so it runs in headless environments)
-* Standard-compliant (we don't care about Microsoft Outlook)
-* Fully open-source
+Six local patches were applied on top of `zCri/hydroxide` to make CalDAV
+actually work end-to-end against a real account and survive on iOS: a
+PROPPATCH no-op (Apple Calendar's account-setup probe), a `RecurrenceID`
+type fix, verifying author-less calendar events (holidays/imports) against
+the account's own keyring, full pagination with per-event skip-on-decode-
+failure, and atomic `auth.json` writes.
 
-Feel free to join the IRC channel: #emersion on Libera Chat.
+It also incorporates several fixes ported from
+[`mathewcsims/protoxide`](https://github.com/mathewcsims/protoxide) — itself
+an abandoned one-day fork of `acheong08/ferroxide`/hydroxide with no ongoing
+relationship to this repo, but a few of its fixes were real and worth
+crediting directly: malformed-event recovery (`sanitizeICS`), verifying
+author-less events against the account's own keyring, browser-based
+human-verification (CAPTCHA) handling on login, and an `import-session`
+command to seed auth from an existing logged-in Proton web session.
 
-## How does it work?
+## What works
 
-hydroxide is a server that translates standard protocols (SMTP, IMAP, CardDAV, CalDAV)
-into ProtonMail API requests. It allows you to use your preferred e-mail clients
-and `git-send-email` with ProtonMail.
+Full two-way sync confirmed against a real Proton account: iOS Calendar can
+view, create, edit, and delete events against Proton Calendar, Proton
+Holidays calendars, and shared/imported calendars with no author key.
 
-    +-----------------+             +-------------+  ProtonMail  +--------------+
-    |                 | IMAP, SMTP  |             |     API      |              |
-    |  E-mail client  <------------->  hydroxide  <-------------->  ProtonMail  |
-    |                 |             |             |              |              |
-    +-----------------+             +-------------+              +--------------+
+## Known limitations
+
+- CalDAV only — no IMAP/SMTP (inherited from hydroxide, unmaintained here;
+  use a separate email bridge)
+- Plaintext HTTP only; put a TLS terminator (e.g. `tailscale serve`) in front
+  for real clients — iOS Calendar requires HTTPS
+- Third-party, unofficial: a Proton API change can break this at any time,
+  and there's no upstream to pull fixes from anymore
 
 ## Setup
 
-### Go
-
-hydroxide is implemented in Go. Head to [Go website](https://golang.org) for
-setup information.
-
-### Installing
-
-Start by installing hydroxide:
-
 ```shell
-git clone https://github.com/emersion/hydroxide.git
-go build ./cmd/hydroxide
+git clone https://github.com/mrk1987/iOxide.git
+cd iOxide
+go build -o ioxide-caldav ./cmd/ioxide
 ```
 
-Then you'll need to login to ProtonMail via hydroxide, so that hydroxide can
-retrieve e-mails from ProtonMail. You can do so with this command:
+Authenticate (mandatory: pass a real client `-app-version`, or Proton
+CAPTCHA-gates the login — see operational notes for how to find a current
+valid value):
 
 ```shell
-hydroxide auth <username>
+./ioxide-caldav -app-version linux-bridge@3.25.0 auth <username>
 ```
 
-Once you're logged in, a "bridge password" will be printed. Don't close your
-terminal yet, as this password is not stored anywhere by hydroxide and will be
-needed when configuring your e-mail client.
+This prints a one-time **bridge password** — not your Proton password — used
+by CalDAV clients below. Credentials are stored encrypted under it at
+`~/.config/hydroxide/auth.json` (path inherited from upstream, unchanged).
 
-Your ProtonMail credentials are stored on disk encrypted with this bridge
-password (a 32-byte random password generated when logging in).
-
-## Usage
-
-hydroxide can be used in multiple modes.
-
-> Don't start hydroxide multiple times, instead you can use `hydroxide serve`.
-> This requires ports 1025 (smtp), 1143 (imap), 8080 (carddav) and 8081 (caldav).
-
-### SMTP
-
-To run hydroxide as an SMTP server:
+Run the CalDAV server:
 
 ```shell
-hydroxide smtp
+./ioxide-caldav -app-version linux-bridge@3.25.0 -caldav-host 0.0.0.0 caldav
 ```
 
-Once the bridge is started, you can configure your e-mail client with the
-following settings:
+### iOS Calendar
 
-* Hostname: `localhost`
-* Port: 1025
-* Security: none
-* Username: your ProtonMail username
-* Password: the bridge password (not your ProtonMail password)
-
-### CardDAV
-
-You must setup an HTTPS reverse proxy to forward requests to `hydroxide`.
-
-```shell
-hydroxide carddav
-```
-
-Tested on GNOME (Evolution) and Android (DAVDroid).
-
-### CalDAV
-
-```shell
-hydroxide caldav
-```
-
-Tested on GNOME (Evolution), Thunderbird, KOrganizer.
-
-### IMAP
-
-⚠️  **Warning**: IMAP support is work-in-progress. Here be dragons.
-
-For now, it only supports unencrypted local connections.
-
-```shell
-hydroxide imap
-```
+Settings → Calendar → Accounts → Add Account → Other → Add CalDAV Account.
+Server must be reachable over HTTPS (iOS refuses to save a plain-HTTP CalDAV
+account) — front the plaintext listener with a TLS-terminating proxy.
 
 ## License
 
-MIT
+MIT, inherited from `emersion/hydroxide`.
