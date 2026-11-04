@@ -23,6 +23,8 @@ type backend struct {
 	privateKeys openpgp.EntityList
 	keyCache    map[string]openpgp.EntityList
 	locker      sync.Mutex
+	cacheMu     sync.Mutex
+	cals        map[string]*calCache
 }
 
 func (b *backend) receiveEvents(events <-chan *protonmail.Event) {
@@ -168,7 +170,9 @@ func toIcalCalendar(event *protonmail.CalendarEvent, userKr openpgp.KeyRing, cal
 }
 
 func getCalendarObject(b *backend, calId string, calKr openpgp.KeyRing, event *protonmail.CalendarEvent, settings protonmail.CalendarSettings) (*caldav.CalendarObject, error) {
+	b.locker.Lock()
 	userKr, exists := b.keyCache[event.Author]
+	b.locker.Unlock()
 	if event.Author == "" {
 		// Events authored by the account owner can come back with no Author set
 		// (holidays, imports, shared calendars). Verify them with the account's
@@ -299,6 +303,31 @@ func (b *backend) GetCalendar(ctx context.Context, path string) (*caldav.Calenda
 }
 
 func (b *backend) GetCalendarObject(ctx context.Context, path string, req *caldav.CalendarCompRequest) (*caldav.CalendarObject, error) {
+	if calId, _, ok := b.splitObjectPath(ctx, path); ok {
+		if co, hit := b.lookup(calId, path); hit {
+			return co, nil
+		}
+	}
+	return b.fetchCalendarObject(ctx, path)
+}
+
+// splitObjectPath extracts the calendar and event ids from an object path.
+func (b *backend) splitObjectPath(ctx context.Context, path string) (calId, evtId string, ok bool) {
+	homeSetPath, err := b.CalendarHomeSetPath(ctx)
+	if err != nil {
+		return "", "", false
+	}
+	id, _ := strings.CutSuffix(path, "/")
+	id, _ = strings.CutSuffix(id, ".ics")
+	id, _ = strings.CutPrefix(id, homeSetPath)
+	parts := strings.Split(id, "/")
+	if len(parts) < 2 {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+func (b *backend) fetchCalendarObject(ctx context.Context, path string) (*caldav.CalendarObject, error) {
 	homeSetPath, err := b.CalendarHomeSetPath(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("caldav/GetCalendarObject: error getting calendar home set path: (%w)", err)
@@ -345,33 +374,7 @@ func (b *backend) ListCalendarObjects(ctx context.Context, path string, req *cal
 	calId, _ := strings.CutSuffix(path, "/")
 	calId, _ = strings.CutPrefix(calId, homeSetPath)
 
-	events, err := b.c.ListCalendarEvents(calId, nil)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/ListCalendarObjects: error listing calendar events for calId %s: (%w)", calId, err)
-	}
-
-	bootstrap, err := b.c.BootstrapCalendar(calId)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/ListCalendarObjects: error bootstrapping calendar (calId: %s): (%w)", calId, err)
-	}
-
-	calKr, err := bootstrap.DecryptKeyring(b.privateKeys)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/ListCalendarObjects: error decrypting keyring: (%w)", err)
-	}
-
-	cos := make([]caldav.CalendarObject, 0, len(events))
-	for i, event := range events {
-		co, err := getCalendarObject(b, calId, calKr, event, bootstrap.CalendarSettings)
-		if err != nil {
-			log.Printf("caldav/ListCalendarObjects: skipping unparseable event %d (id %s): %v", i, event.ID, err)
-			continue
-		}
-
-		cos = append(cos, *co)
-	}
-
-	return cos, nil
+	return b.objects(calId)
 }
 
 func (b *backend) QueryCalendarObjects(ctx context.Context, path string, query *caldav.CalendarQuery) ([]caldav.CalendarObject, error) {
@@ -392,38 +395,16 @@ func (b *backend) QueryCalendarObjects(ctx context.Context, path string, query *
 	}
 	cf := &query.CompFilter.Comps[0]
 
-	filter := protonmail.CalendarEventFilter{
-		Start:    protonmail.NewTimestamp(cf.Start),
-		End:      protonmail.NewTimestamp(cf.End),
-		Timezone: cf.Start.Location().String(),
-	}
-
-	events, err := b.c.ListCalendarEvents(calId, &filter)
+	all, err := b.objects(calId)
 	if err != nil {
-		return nil, fmt.Errorf("caldav/QueryCalendarObjects: error listing calendar events for calId %s: (%w)", calId, err)
+		return nil, fmt.Errorf("caldav/QueryCalendarObjects: error loading calendar %s: (%w)", calId, err)
 	}
-
-	bootstrap, err := b.c.BootstrapCalendar(calId)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/QueryCalendarObjects: error bootstrapping calendar (calId: %s): (%w)", calId, err)
-	}
-
-	calKr, err := bootstrap.DecryptKeyring(b.privateKeys)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/QueryCalendarObjects: error decrypting keyring: (%w)", err)
-	}
-
-	cos := make([]caldav.CalendarObject, 0, len(events))
-	for i, event := range events {
-		co, err := getCalendarObject(b, calId, calKr, event, bootstrap.CalendarSettings)
-		if err != nil {
-			log.Printf("caldav/QueryCalendarObjects: skipping unparseable event %d (id %s): %v", i, event.ID, err)
-			continue
+	cos := make([]caldav.CalendarObject, 0, len(all))
+	for _, co := range all {
+		if overlaps(co, cf.Start, cf.End) {
+			cos = append(cos, co)
 		}
-
-		cos = append(cos, *co)
 	}
-
 	return cos, nil
 }
 
@@ -457,6 +438,13 @@ func (b *backend) PutCalendarObject(ctx context.Context, path string, calendar *
 	}
 
 	path = homeSetPath + calId + formatCalendarObjectPath(newEvent.ID)
+	b.evict(calId, evtId)
+	if co, ferr := b.fetchCalendarObject(ctx, path); ferr == nil {
+		b.store(calId, newEvent.ID, int64(newEvent.LastEditTime), co)
+	} else {
+		log.Printf("caldav/PutCalendarObject: cache update failed, refreshing in background: %v", ferr)
+		go b.refresh(calId)
+	}
 	return path, nil
 }
 
@@ -480,6 +468,7 @@ func (b *backend) DeleteCalendarObject(ctx context.Context, path string) error {
 		return fmt.Errorf("caldav/DeleteCalendarObject: error deleting calendar event (calId: %s, evtId: %s): (%w)", calId, evtId, err)
 	}
 
+	b.evict(calId, evtId)
 	return nil
 }
 
@@ -502,6 +491,8 @@ func NewHandler(c *protonmail.Client, privateKeys openpgp.EntityList, username s
 	if events != nil {
 		go b.receiveEvents(events)
 	}
+
+	go b.warm()
 
 	return &caldav.Handler{Backend: b}
 }
