@@ -16,7 +16,7 @@ import (
 // background, and serves reads from it. Unchanged events are not decrypted again
 // on refresh (keyed on LastEditTime). Writes patch the cache directly.
 
-const refreshInterval = 5 * time.Minute
+const refreshInterval = 15 * time.Minute
 
 type cachedEvent struct {
 	lastEdit int64
