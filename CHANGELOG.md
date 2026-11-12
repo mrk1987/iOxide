@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+- Unused mail-era account fields, key metadata and an unused single-event
+  write wrapper. Account and address key retrieval now share `account.go`.
+
 ## [1.0.0] - 2026-11-12
 
 ### Changed (breaking)

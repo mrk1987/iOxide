@@ -1,4 +1,5 @@
-// Package protonmail implements a ProtonMail API client.
+// Package protonmail implements the Proton API calls and cryptography needed
+// for account authentication and Proton Calendar.
 package protonmail
 
 import (
@@ -80,7 +81,7 @@ func (t Timestamp) Time() time.Time {
 	return time.Unix(int64(t), 0)
 }
 
-// Client is a ProtonMail API client.
+// Client accesses Proton's account and calendar APIs.
 type Client struct {
 	RootURL    string
 	AppVersion string

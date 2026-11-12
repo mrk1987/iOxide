@@ -1035,15 +1035,6 @@ func (c *Client) prepareWrite(calID string, w EventWrite, calKr, userKr openpgp.
 	return CalendarEventUpdateSyncEntry{ID: w.ID, Event: data}, nil
 }
 
-// UpdateCalendarEvent creates or replaces one event.
-func (c *Client) UpdateCalendarEvent(calID string, eventID string, event ical.Event, userKr openpgp.KeyRing) (*CalendarEvent, error) {
-	results, err := c.SyncCalendarEvents(calID, []EventWrite{{ID: eventID, Event: &event}}, userKr)
-	if err != nil {
-		return nil, err
-	}
-	return results[0], nil
-}
-
 // DeleteCalendarEvent deletes one event.
 func (c *Client) DeleteCalendarEvent(calID string, eventID string) error {
 	_, err := c.SyncCalendarEvents(calID, []EventWrite{{ID: eventID}}, nil)

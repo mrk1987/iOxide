@@ -10,24 +10,13 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp"
 )
 
-type PrivateKeyFlags int
-
-const (
-	PrivateKeyVerify  PrivateKeyFlags = 1
-	PrivateKeyEncrypt PrivateKeyFlags = 2
-)
-
 type PrivateKey struct {
 	ID          string
-	Version     int
-	Flags       PrivateKeyFlags
 	PrivateKey  string
 	Fingerprint string
-	Primary     int
 	Active      int
 	Token       string
 	Signature   string
-	// TODO: Fingerprints, PublicKey, Activation
 }
 
 func (priv *PrivateKey) Entity() (*openpgp.Entity, error) {
@@ -41,21 +30,11 @@ func (priv *PrivateKey) Entity() (*openpgp.Entity, error) {
 	return keyRing[0], nil
 }
 
-type RecipientType int
-
-const (
-	RecipientInternal RecipientType = 1
-	RecipientExternal RecipientType = 2
-)
-
 type PublicKeyResp struct {
-	RecipientType RecipientType
-	MIMEType      string
-	Keys          []*PublicKey
+	Keys []*PublicKey
 }
 
 type PublicKey struct {
-	Send      int
 	PublicKey string
 }
 
