@@ -12,7 +12,7 @@ import (
 	"github.com/emersion/go-ical"
 	"github.com/emersion/go-webdav/caldav"
 
-	"github.com/mrk1987/ioxide/protonmail"
+	"github.com/mrk1987/ioxide/internal/protonmail"
 )
 
 // The backend keeps a decrypted copy of every calendar in memory and serves

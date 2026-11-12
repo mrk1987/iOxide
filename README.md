@@ -1,9 +1,8 @@
-![iOxide](assets/iOxide-banner.png)
+![iOxide](docs/assets/iOxide-banner.png)
 
-# <img src="assets/iOxide-logo.png" width="32" height="32" align="left" alt=""> iOxide
+# <img src="docs/assets/iOxide-logo.png" width="32" height="32" align="left" alt=""> iOxide
 
 [![CI](https://github.com/mrk1987/iOxide/actions/workflows/ci.yml/badge.svg)](https://github.com/mrk1987/iOxide/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/mrk1987/ioxide.svg)](https://pkg.go.dev/github.com/mrk1987/ioxide)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **iOxide 1.0** is a CalDAV proxy for Proton Calendar. It logs in to your Proton
@@ -65,7 +64,7 @@ To build it yourself, use Go 1.26.11 or newer:
 go install github.com/mrk1987/ioxide/cmd/ioxide@latest
 ```
 
-A `Dockerfile` and a systemd unit (`contrib/ioxide.service`) are included.
+A `Dockerfile` and a systemd unit (`deploy/ioxide.service`) are included.
 
 ## Usage
 
@@ -178,7 +177,7 @@ skipped with a message naming the event.
   and written with mode `0600`. Without the bridge password it cannot be
   read, and a damaged or tampered file is discarded and rebuilt.
 
-See [SECURITY.md](SECURITY.md) for how to report a vulnerability.
+See the [security policy](.github/SECURITY.md) for how to report a vulnerability.
 
 ## Development
 
@@ -189,7 +188,19 @@ go vet ./...
 ```
 
 CI also runs `gofmt`, `staticcheck` and `govulncheck`. See
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[contributing guide](.github/CONTRIBUTING.md).
+
+The source is organised as follows:
+
+```text
+cmd/ioxide/       Command-line entry point
+internal/        Authentication, CalDAV server and Proton API client
+deploy/          systemd service
+docs/            Changelog and artwork
+.github/         CI, release workflow and contribution policies
+```
+
+See the [changelog](docs/CHANGELOG.md) for release history.
 
 ## Acknowledgements
 

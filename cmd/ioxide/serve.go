@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mrk1987/ioxide/auth"
-	"github.com/mrk1987/ioxide/caldav"
+	"github.com/mrk1987/ioxide/internal/auth"
+	"github.com/mrk1987/ioxide/internal/caldav"
 )
 
 func cmdServe(opts *options) error {

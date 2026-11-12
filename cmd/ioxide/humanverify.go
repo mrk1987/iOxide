@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mrk1987/ioxide/protonmail"
+	"github.com/mrk1987/ioxide/internal/protonmail"
 )
 
 const humanVerificationTimeout = 5 * time.Minute

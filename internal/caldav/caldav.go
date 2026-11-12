@@ -19,7 +19,7 @@ import (
 	"github.com/emersion/go-webdav"
 	"github.com/emersion/go-webdav/caldav"
 
-	"github.com/mrk1987/ioxide/protonmail"
+	"github.com/mrk1987/ioxide/internal/protonmail"
 )
 
 const (

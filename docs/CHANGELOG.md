@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Grouped application packages under `internal/`, deployment examples under
+  `deploy/`, artwork and the changelog under `docs/`, and contribution policies
+  under `.github/`.
+
 ### Removed
 
 - Unused mail-era account fields, key metadata and an unused single-event

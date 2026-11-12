@@ -10,4 +10,4 @@
 
 - [ ] `gofmt`, `go vet` and `go test ./...` pass
 - [ ] No credentials or tokens in code, tests or logs
-- [ ] CHANGELOG.md updated under "Unreleased"
+- [ ] docs/CHANGELOG.md updated under "Unreleased"

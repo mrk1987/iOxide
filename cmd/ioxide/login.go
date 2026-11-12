@@ -9,8 +9,8 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/mrk1987/ioxide/auth"
-	"github.com/mrk1987/ioxide/protonmail"
+	"github.com/mrk1987/ioxide/internal/auth"
+	"github.com/mrk1987/ioxide/internal/protonmail"
 )
 
 // cmdAuth logs in to Proton interactively and stores the session.

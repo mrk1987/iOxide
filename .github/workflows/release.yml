@@ -47,6 +47,11 @@ jobs:
           ext=""; [ "$GOOS" = "windows" ] && ext=".exe"
           go build -trimpath -ldflags "-s -w" -o "dist/${name}/ioxide${ext}" ./cmd/ioxide
           cp LICENSE README.md "dist/${name}/"
+          mkdir -p "dist/${name}/docs/assets"
+          cp docs/CHANGELOG.md "dist/${name}/docs/"
+          cp docs/assets/*.png "dist/${name}/docs/assets/"
+          mkdir -p "dist/${name}/.github"
+          cp .github/SECURITY.md .github/CONTRIBUTING.md "dist/${name}/.github/"
           cd dist
           if [ "$GOOS" = "windows" ]; then zip -r "${name}.zip" "${name}"; else tar czf "${name}.tar.gz" "${name}"; fi
           rm -r "${name}"

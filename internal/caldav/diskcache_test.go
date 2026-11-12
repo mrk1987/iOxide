@@ -9,7 +9,7 @@ import (
 
 	"github.com/emersion/go-webdav/caldav"
 
-	"github.com/mrk1987/ioxide/protonmail"
+	"github.com/mrk1987/ioxide/internal/protonmail"
 )
 
 func testBackend(t *testing.T, key *[32]byte) *backend {

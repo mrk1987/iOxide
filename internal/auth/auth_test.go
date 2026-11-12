@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/mrk1987/ioxide/protonmail"
+	"github.com/mrk1987/ioxide/internal/protonmail"
 )
 
 // useTempConfigDir points os.UserConfigDir at a fresh directory.

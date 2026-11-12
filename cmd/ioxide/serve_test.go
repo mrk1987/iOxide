@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mrk1987/ioxide/auth"
-	"github.com/mrk1987/ioxide/protonmail"
+	"github.com/mrk1987/ioxide/internal/auth"
+	"github.com/mrk1987/ioxide/internal/protonmail"
 )
 
 func TestServerRequiresCredentials(t *testing.T) {

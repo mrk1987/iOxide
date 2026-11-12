@@ -31,7 +31,7 @@ Security issues go through [SECURITY.md](SECURITY.md), not the issue tracker.
    ```
 
    CI also runs `staticcheck` and `govulncheck`.
-5. Add a line under "Unreleased" in `CHANGELOG.md`.
+5. Add a line under "Unreleased" in `docs/CHANGELOG.md`.
 6. Say in the pull request how you tested it, including which CalDAV client
    you tried if the change touches the server.
 
@@ -46,4 +46,4 @@ Security issues go through [SECURITY.md](SECURITY.md), not the issue tracker.
 ## Licence
 
 By contributing you agree that your contribution is licensed under the MIT
-licence in [LICENSE](LICENSE).
+licence in [LICENSE](../LICENSE).

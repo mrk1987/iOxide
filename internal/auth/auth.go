@@ -21,7 +21,7 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"golang.org/x/crypto/nacl/secretbox"
 
-	"github.com/mrk1987/ioxide/protonmail"
+	"github.com/mrk1987/ioxide/internal/protonmail"
 )
 
 const (

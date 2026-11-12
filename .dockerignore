@@ -1,7 +1,7 @@
 .git
 .github
-assets
-contrib
+docs
+deploy
 *.md
 /ioxide
 /ioxide.exe

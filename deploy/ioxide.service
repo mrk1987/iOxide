@@ -4,7 +4,7 @@
 #   sudo useradd --system --home /var/lib/ioxide --create-home ioxide
 #   sudo install -m 755 ioxide /usr/local/bin/ioxide
 #   sudo -u ioxide ioxide auth <username>     # once, interactive
-#   sudo cp contrib/ioxide.service /etc/systemd/system/
+#   sudo cp deploy/ioxide.service /etc/systemd/system/
 #   sudo systemctl enable --now ioxide
 #
 # The service listens on localhost only. Put a TLS-terminating reverse proxy
