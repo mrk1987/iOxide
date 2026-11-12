@@ -44,8 +44,22 @@ break it at any time.
 
 ## Install
 
-Download a binary from the [releases page](https://github.com/mrk1987/iOxide/releases),
-or build it yourself with Go 1.26 or newer:
+Download and extract the archive for your system from the
+[latest release](https://github.com/mrk1987/iOxide/releases/latest):
+
+| System | Intel / AMD (64-bit) | ARM (64-bit) |
+|--------|---------------------|--------------|
+| Linux | `linux-amd64.tar.gz` | `linux-arm64.tar.gz` |
+| macOS | `darwin-amd64.tar.gz` | `darwin-arm64.tar.gz` (Apple Silicon) |
+| Windows | `windows-amd64.zip` | `windows-arm64.zip` |
+
+Archive names start with `ioxide-<version>-`. Each contains the `ioxide`
+binary (`ioxide.exe` on Windows), the README and the license. Put the binary
+in a directory on your `PATH`, or run it from the extracted folder using
+`./ioxide` on Linux/macOS or `.\ioxide.exe` in PowerShell. Go is not needed
+to run a downloaded binary. `SHA256SUMS` contains checksums for all archives.
+
+To build it yourself, use Go 1.26.11 or newer:
 
 ```sh
 go install github.com/mrk1987/ioxide/cmd/ioxide@latest

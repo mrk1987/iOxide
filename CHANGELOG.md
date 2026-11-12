@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-12
+
 ### Changed (breaking)
 
 - iOxide is now a CalDAV proxy only. The IMAP, SMTP and CardDAV servers and
@@ -62,6 +64,8 @@ All notable changes to this project are documented here. The format follows
   spending minutes re-downloading and decrypting.
 - Unit tests, CI (build, test, lint, vulnerability check), Dependabot,
   release builds, a Dockerfile and a systemd unit.
+- Release archives for Linux, macOS and Windows on amd64 and arm64, with
+  SHA-256 checksums. Release builds run tests and vet before packaging.
 
 ## Before this changelog
 
