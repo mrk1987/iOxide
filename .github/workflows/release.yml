@@ -52,7 +52,9 @@ jobs:
           else
             version="check-${GITHUB_SHA:0:7}"
           fi
-          name="ioxide-${version}-${GOOS}-${GOARCH}"
+          platform="$GOOS"
+          if [ "$platform" = "darwin" ]; then platform="macos"; fi
+          name="ioxide-${version}-${platform}-${GOARCH}"
           ext=""; [ "$GOOS" = "windows" ] && ext=".exe"
           go build -trimpath -ldflags "-s -w" -o "dist/${name}/ioxide${ext}" ./cmd/ioxide
           cp LICENSE README.md "dist/${name}/"

@@ -49,7 +49,7 @@ Download and extract the archive for your system from the
 | System | Intel / AMD (64-bit) | ARM (64-bit) |
 |--------|---------------------|--------------|
 | Linux | `linux-amd64.tar.gz` | `linux-arm64.tar.gz` |
-| macOS | `darwin-amd64.tar.gz` | `darwin-arm64.tar.gz` (Apple Silicon) |
+| macOS | `macos-amd64.tar.gz` | `macos-arm64.tar.gz` (Apple Silicon) |
 | Windows | `windows-amd64.zip` | `windows-arm64.zip` |
 
 Archive names start with `ioxide-<version>-`. Each contains the `ioxide`

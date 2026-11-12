@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- macOS download filenames use `macos` instead of Go's internal `darwin` name.
 - Updated checkout, Go setup, artifact upload/download and release publishing
   actions. Release workflow changes now build and verify all six archives
   before publication; branch and pull-request checks do not publish a release.
