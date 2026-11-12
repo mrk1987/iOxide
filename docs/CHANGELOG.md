@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Updated checkout, Go setup, artifact upload/download and release publishing
+  actions. Release workflow changes now build and verify all six archives
+  before publication; branch and pull-request checks do not publish a release.
 - Grouped application packages under `internal/`, deployment examples under
   `deploy/`, artwork and the changelog under `docs/`, and contribution policies
   under `.github/`.
