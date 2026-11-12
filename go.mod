@@ -1,6 +1,6 @@
 module github.com/mrk1987/ioxide
 
-go 1.26.0
+go 1.26.11
 
 require (
 	github.com/ProtonMail/go-crypto v1.5.2
