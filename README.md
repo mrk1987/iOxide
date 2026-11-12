@@ -6,13 +6,14 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/mrk1987/ioxide.svg)](https://pkg.go.dev/github.com/mrk1987/ioxide)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A CalDAV proxy for Proton Calendar. It logs in to your Proton account, decrypts
-your calendars locally and serves them over standard CalDAV, so the calendar
-app you already use (iOS and macOS Calendar, Thunderbird, DAVx⁵, ...) can read
-and write Proton Calendar directly.
+**iOxide 1.0** is a CalDAV proxy for Proton Calendar. It logs in to your Proton
+account, decrypts your calendars locally and serves them over standard CalDAV,
+so the calendar app you already use (iOS and macOS Calendar, Thunderbird,
+DAVx⁵, ...) can read and write Proton Calendar directly.
 
 It was built to get a Proton account into the native iOS Calendar app, which
-Proton does not support, hence the name.
+Proton does not support, hence the name. It does one thing, calendars, and
+nothing else.
 
 ## What works
 
@@ -23,7 +24,8 @@ Proton does not support, hence the name.
 - Apple Calendar's account setup, which needs `PROPPATCH` to succeed.
 - Fast listing. Calendars are decrypted once and kept in memory. After that
   the proxy follows Proton's change log once a minute, so edits made in the
-  Proton apps appear within a minute. Writes update the cache immediately.
+  Proton apps appear within a minute, and re-reads the calendar list every 15
+  minutes. Writes update the cache immediately.
 - Fast restarts. The decrypted calendars are also cached on disk, encrypted
   under a key derived from the bridge password, so a restart does not
   re-download anything.
