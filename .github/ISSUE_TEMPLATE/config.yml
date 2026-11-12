@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security issue
+    url: https://github.com/mrk1987/iOxide/security/advisories/new
+    about: Report a vulnerability privately instead of opening a public issue.

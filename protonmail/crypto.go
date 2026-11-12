@@ -1,7 +1,9 @@
 package protonmail
 
 import (
+	"bytes"
 	"crypto"
+	"encoding/base64"
 	"hash"
 	"io"
 	"time"
@@ -218,7 +220,7 @@ func (s signatureWriter) Close() error {
 	return s.encryptedData.Close()
 }
 
-// noOpCloser is like an ioutil.NopCloser, but for an io.Writer.
+// noOpCloser is like an io.NopCloser, but for an io.Writer.
 type noOpCloser struct {
 	w io.Writer
 }
@@ -229,4 +231,46 @@ func (c noOpCloser) Write(data []byte) (n int, err error) {
 
 func (c noOpCloser) Close() error {
 	return nil
+}
+
+// serializeEncryptedKey encrypts a session key to pub and returns the
+// resulting public-key encrypted session key packet, base64 encoded.
+func serializeEncryptedKey(symKey *packet.EncryptedKey, pub *packet.PublicKey, config *packet.Config) (string, error) {
+	var encoded bytes.Buffer
+	ciphertext := base64.NewEncoder(base64.StdEncoding, &encoded)
+
+	if err := packet.SerializeEncryptedKey(ciphertext, pub, symKey.CipherFunc, symKey.Key, config); err != nil {
+		return "", err
+	}
+	if err := ciphertext.Close(); err != nil {
+		return "", err
+	}
+
+	return encoded.String(), nil
+}
+
+// detachedSignatureReader verifies a detached signature over a decrypted body
+// once the body has been read to EOF, and records the result on md.
+type detachedSignatureReader struct {
+	md        *openpgp.MessageDetails
+	body      io.Reader
+	signed    bytes.Buffer
+	signature io.Reader
+	keyring   openpgp.KeyRing
+	eof       bool
+}
+
+func (r *detachedSignatureReader) Read(p []byte) (n int, err error) {
+	n, err = r.body.Read(p)
+	if err == io.EOF && !r.eof {
+		signer, signatureError := openpgp.CheckArmoredDetachedSignature(r.keyring, &r.signed, r.signature, nil)
+		r.md.IsSigned = true
+		r.md.SignatureError = signatureError
+		if signer != nil {
+			r.md.SignedByKeyId = signer.PrimaryKey.KeyId
+			r.md.SignedBy = entityPrimaryKey(signer)
+		}
+		r.eof = true
+	}
+	return n, err
 }

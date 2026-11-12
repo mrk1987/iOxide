@@ -45,7 +45,7 @@ type RecipientType int
 
 const (
 	RecipientInternal RecipientType = 1
-	RecipientExternal               = 2
+	RecipientExternal RecipientType = 2
 )
 
 type PublicKeyResp struct {

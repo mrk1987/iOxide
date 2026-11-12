@@ -1,498 +1,459 @@
+// Package caldav exposes Proton Calendar as a CalDAV collection tree.
+//
+// Every calendar in the account appears as a collection under
+// /caldav/calendars/<calendar id>/, and every event as
+// <calendar id>/<event id>.ics inside it.
 package caldav
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"github.com/ProtonMail/go-crypto/openpgp"
-	"github.com/emersion/go-ical"
-	"github.com/emersion/go-webdav/caldav"
-	"github.com/mrk1987/ioxide/protonmail"
-	"io"
 	"log"
-	"maps"
 	"net/http"
 	"strings"
 	"sync"
-	"time"
+
+	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/emersion/go-ical"
+	"github.com/emersion/go-webdav"
+	"github.com/emersion/go-webdav/caldav"
+
+	"github.com/mrk1987/ioxide/protonmail"
+)
+
+const (
+	principalPath = "/caldav/"
+	homeSetPath   = principalPath + "calendars/"
 )
 
 type backend struct {
-	c           *protonmail.Client
+	client      *protonmail.Client
 	privateKeys openpgp.EntityList
-	keyCache    map[string]openpgp.EntityList
-	locker      sync.Mutex
-	cacheMu     sync.Mutex
-	cals        map[string]*calCache
+	ownEmails   map[string]bool // addresses whose keys are in privateKeys
+
+	keysMu     sync.Mutex
+	authorKeys map[string]openpgp.EntityList // public keys of other event authors, by email
+
+	cacheMu sync.Mutex
+	cals    map[string]*calCache
+
+	// On-disk copy of the cache; see diskcache.go.
+	cachePath string
+	cacheKey  *[32]byte
+	dirtyMu   sync.Mutex
+	dirty     bool
 }
 
-func (b *backend) receiveEvents(events <-chan *protonmail.Event) {
-	// TODO
-}
-
-// sanitizeICS repairs decrypted iCalendar text that the strict decoder rejects.
-// The common defect in imported events is an unescaped line break inside a
-// property value: the continuation appears as its own physical line with no
-// name:value separator, which the decoder reports as "missing colon". Such lines
-// (no ':' and no ';', and not a fold continuation) are merged back onto the
-// previous logical line; blank lines are dropped. Lines that already look like
-// valid content lines pass through untouched.
-//
-// Ported from mathewcsims/protoxide (commit ac60922) — see README lineage notes.
-func sanitizeICS(data []byte) []byte {
-	text := strings.ReplaceAll(string(data), "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	var out []string
-	for _, line := range strings.Split(text, "\n") {
-		if line == "" {
-			continue
-		}
-		if line[0] == ' ' || line[0] == '\t' {
-			out = append(out, line) // proper fold continuation
-			continue
-		}
-		if !strings.ContainsAny(line, ":;") {
-			// Orphaned value continuation: merge into the previous logical line.
-			if len(out) > 0 {
-				out[len(out)-1] += line
-			}
-			continue
-		}
-		out = append(out, line)
-	}
-	return []byte(strings.Join(out, "\r\n") + "\r\n")
-}
-
-func readEventCard(event *ical.Event, eventCard protonmail.CalendarEventCard, userKr openpgp.KeyRing, calKr openpgp.KeyRing, keyPacket string) (ical.Props, error) {
-	md, err := eventCard.Read(userKr, calKr, keyPacket)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/readEventCard: error reading event card: (%w)", err)
+// NewHandler returns an HTTP handler serving the account's calendars over
+// CalDAV. Requests must already be authenticated: the handler trusts the
+// client and keys it is given. The decrypted calendars are cached on disk
+// under cacheKey; with a nil key nothing is written to disk.
+func NewHandler(client *protonmail.Client, privateKeys openpgp.EntityList, username string, cacheKey *[32]byte) (http.Handler, error) {
+	if len(privateKeys) == 0 {
+		return nil, errors.New("caldav: no private key available")
 	}
 
-	data, err := io.ReadAll(md.UnverifiedBody)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/readEventCard: error reading unverified body: (%w)", err)
+	b := &backend{
+		client:      client,
+		privateKeys: privateKeys,
+		ownEmails:   identityEmails(privateKeys),
+		authorKeys:  map[string]openpgp.EntityList{},
+		cals:        map[string]*calCache{},
+		cacheKey:    cacheKey,
 	}
-
-	decoded, err := ical.NewDecoder(bytes.NewReader(data)).Decode()
-	if err != nil {
-		// Imported events sometimes carry content the strict parser rejects — most
-		// often an unescaped newline in a value, whose second physical line has no
-		// name:value separator ("missing colon"). Repair and retry rather than
-		// dropping the whole event (previously ~2000 events in one calendar were
-		// silently skipped this way).
-		repaired, rerr := ical.NewDecoder(bytes.NewReader(sanitizeICS(data))).Decode()
-		if rerr != nil {
-			return nil, fmt.Errorf("caldav/readEventCard: error decoding ical data: (%w)", err)
-		}
-		log.Printf("caldav/readEventCard: recovered a malformed event via sanitize")
-		decoded = repaired
-	}
-
-	// The signature can be checked only if md.UnverifiedBody is consumed until
-	// EOF
-	// TODO: mdc hash mismatch (?)
-	/*_, err = io.Copy(io.Discard, md.UnverifiedBody)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/readEventCard: error copying unverified body: (%w)", err)
-	}*/
-
-	if err := md.SignatureError; err != nil {
-		// Old or imported events are often signed with a key that no longer
-		// verifies, or (for author-less events) the account's own keyring may
-		// still fail to verify a shared/imported card. For a personal
-		// read/write bridge, decryptability matters more than signature
-		// verification — serve the event rather than dropping it.
-		log.Printf("caldav/readEventCard: serving event with unverified signature: %v", err)
-	}
-
-	children := decoded.Events()
-	if len(children) != 1 {
-		return nil, fmt.Errorf("caldav/readEventCard: expected VCALENDAR to have exactly one VEVENT")
-	}
-	decodedEvent := &children[0]
-
-	for _, props := range decodedEvent.Props {
-		for _, p := range props {
-			event.Props.Set(&p)
-		}
-	}
-
-	return decoded.Props, nil
-}
-
-func toIcalCalendar(event *protonmail.CalendarEvent, userKr openpgp.KeyRing, calKr openpgp.KeyRing) (*ical.Calendar, error) {
-	merged := ical.NewEvent()
-	calProps := ical.Props{}
-	// TODO: handle AttendeesEvents and PersonalEvents
-	for _, card := range event.SharedEvents {
-		if propsMap, err := readEventCard(merged, card, userKr, calKr, event.SharedKeyPacket); err != nil {
-			return nil, fmt.Errorf("caldav/toIcalCalendar: error reading shared event card: (%w)", err)
-		} else {
-			for name, _ := range propsMap {
-				calProps.Set(propsMap.Get(name))
-			}
-		}
-	}
-
-	for _, card := range event.CalendarEvents {
-		if propsMap, err := readEventCard(merged, card, userKr, calKr, event.CalendarKeyPacket); err != nil {
-			return nil, fmt.Errorf("caldav/toIcalCalendar: error reading calendar event card: (%w)", err)
-		} else {
-			for name, _ := range propsMap {
-				calProps.Set(propsMap.Get(name))
-			}
-		}
-	}
-
-	for _, notification := range event.Notifications {
-		alarm := ical.NewComponent(ical.CompAlarm)
-
-		trigger := ical.NewProp("TRIGGER")
-		trigger.SetValueType(ical.ValueDuration)
-		trigger.Value = notification.Trigger
-
-		alarm.Props.SetText("ACTION", notification.Type.ToIcalAction())
-		alarm.Props.Add(trigger)
-
-		merged.Children = append(merged.Children, alarm)
-	}
-
-	cal := ical.NewCalendar()
-
-	if calProps != nil {
-		maps.Copy(cal.Props, calProps)
-	}
-	cal.Children = append(cal.Children, merged.Component)
-
-	return cal, nil
-}
-
-func getCalendarObject(b *backend, calId string, calKr openpgp.KeyRing, event *protonmail.CalendarEvent, settings protonmail.CalendarSettings) (*caldav.CalendarObject, error) {
-	b.locker.Lock()
-	userKr, exists := b.keyCache[event.Author]
-	b.locker.Unlock()
-	if event.Author == "" {
-		// Events authored by the account owner can come back with no Author set
-		// (holidays, imports, shared calendars). Verify them with the account's
-		// own keyring instead of fetching public keys for an empty address,
-		// which the API rejects with "The Email is required" ([33101]).
-		// Ported from mathewcsims/protoxide (commit 8d96873).
-		userKr, exists = b.privateKeys, true
-	}
-	if !exists && event.Author != "" {
-		userKeys, err := b.c.GetPublicKeys(event.Author)
+	if cacheKey != nil {
+		p, err := cacheFilePath(username)
 		if err != nil {
-			return nil, fmt.Errorf("caldav/getCalendarObject: could not get public keys for author %s: (%w)", event.Author, err)
-		}
-
-		for _, userKey := range userKeys.Keys {
-			userKeyEntity, err := userKey.Entity()
-			if err != nil {
-				return nil, fmt.Errorf("caldav/getCalendarObject: error converting user key entity: (%w)", err)
-			}
-
-			userKr = append(userKr, userKeyEntity)
-		}
-
-		b.locker.Lock()
-		b.keyCache[event.Author] = userKr
-		b.locker.Unlock()
-	}
-
-	if event.Notifications == nil {
-		if event.FullDay == 0 {
-			event.Notifications = settings.DefaultPartDayNotifications
+			b.logf("calendar cache disabled: %v", err)
 		} else {
-			event.Notifications = settings.DefaultFullDayNotifications
+			b.cachePath = p
 		}
 	}
+	go b.warm()
 
-	data, err := toIcalCalendar(event, userKr, calKr)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/getCalendarObject: error converting to iCal calendar: (%w)", err)
-	}
-
-	homeSetPath, err := b.CalendarHomeSetPath(nil)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/getCalendarObject: error getting calendar home set path: (%w)", err)
-	}
-
-	co := &caldav.CalendarObject{
-		Path:    homeSetPath + calId + formatCalendarObjectPath(event.ID),
-		ModTime: time.Unix(int64(event.LastEditTime), 0),
-		ETag:    fmt.Sprintf("%X%s", event.LastEditTime, event.ID),
-		Data:    data,
-	}
-	return co, nil
+	return withPropPatch(&caldav.Handler{Backend: b}), nil
 }
 
-func formatCalendarObjectPath(id string) string {
-	return "/" + id + ".ics"
+func identityEmails(keys openpgp.EntityList) map[string]bool {
+	emails := map[string]bool{}
+	for _, entity := range keys {
+		for _, identity := range entity.Identities {
+			if identity.UserId != nil && identity.UserId.Email != "" {
+				emails[strings.ToLower(identity.UserId.Email)] = true
+			}
+		}
+	}
+	return emails
 }
+
+// Path helpers. The layout is fixed, so no round trip to Proton is needed to
+// map a request path to calendar and event ids.
+
+func calendarPath(calID string) string {
+	return homeSetPath + calID
+}
+
+func objectPath(calID, eventID string) string {
+	return homeSetPath + calID + "/" + eventID + ".ics"
+}
+
+// splitCalendarPath returns the calendar id in a calendar collection path.
+func splitCalendarPath(p string) (calID string, ok bool) {
+	rest, found := strings.CutPrefix(p, homeSetPath)
+	if !found {
+		return "", false
+	}
+	calID = strings.TrimSuffix(rest, "/")
+	if calID == "" || strings.Contains(calID, "/") {
+		return "", false
+	}
+	return calID, true
+}
+
+// splitObjectPath returns the calendar and event ids in a calendar object path.
+func splitObjectPath(p string) (calID, eventID string, ok bool) {
+	rest, found := strings.CutPrefix(p, homeSetPath)
+	if !found {
+		return "", "", false
+	}
+	rest = strings.TrimSuffix(strings.TrimSuffix(rest, "/"), ".ics")
+	calID, eventID, found = strings.Cut(rest, "/")
+	if !found || calID == "" || eventID == "" || strings.Contains(eventID, "/") {
+		return "", "", false
+	}
+	return calID, eventID, true
+}
+
+// errNotFound marks a 404 so callers can tell "missing" from "failed".
+var errNotFound = errors.New("not found")
+
+func badPath(p string) error {
+	return webdav.NewHTTPError(http.StatusNotFound, fmt.Errorf("caldav: no resource at %q: %w", p, errNotFound))
+}
+
+// webdav.UserPrincipalBackend
+
+func (b *backend) CurrentUserPrincipal(ctx context.Context) (string, error) {
+	return principalPath, nil
+}
+
+// caldav.Backend
 
 func (b *backend) CalendarHomeSetPath(ctx context.Context) (string, error) {
-	userPrincipal, err := b.CurrentUserPrincipal(ctx)
-	if err != nil {
-		return "", fmt.Errorf("caldav/CalendarHomeSetPath: could not get current user principal: (%w)", err)
-	}
-	return userPrincipal + "calendars/", nil
+	return homeSetPath, nil
+}
+
+func (b *backend) CreateCalendar(ctx context.Context, cal *caldav.Calendar) error {
+	return webdav.NewHTTPError(http.StatusForbidden, errors.New("caldav: creating calendars is not supported"))
 }
 
 func (b *backend) ListCalendars(ctx context.Context) ([]caldav.Calendar, error) {
-	protonCals, err := b.c.ListCalendars()
+	protonCals, err := b.client.ListCalendars()
 	if err != nil {
-		return nil, fmt.Errorf("caldav/ListCalendars: error listing ProtonMail calendars: (%w)", err)
+		return nil, fmt.Errorf("caldav: listing calendars: %w", err)
 	}
 
-	cals := make([]caldav.Calendar, len(protonCals))
-	homeSetPath, err := b.CalendarHomeSetPath(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/ListCalendars: error getting calendar home set path: (%w)", err)
-	}
-
-	for i, cal := range protonCals {
-		calView, err := protonmail.FindMemberViewFromKeyring(cal.Members, b.privateKeys)
+	cals := make([]caldav.Calendar, 0, len(protonCals))
+	for _, cal := range protonCals {
+		c, err := b.toCalendar(cal)
 		if err != nil {
-			return nil, fmt.Errorf("caldav/ListCalendars: error finding member view for calendar %s: (%w)", cal.ID, err)
+			return nil, err
 		}
-
-		caldavCal := caldav.Calendar{
-			Path:        homeSetPath + cal.ID,
-			Name:        calView.Name,
-			Description: calView.Description,
-		}
-		cals[i] = caldavCal
+		cals = append(cals, *c)
 	}
 	return cals, nil
 }
 
-func (b *backend) GetCalendar(ctx context.Context, path string) (*caldav.Calendar, error) {
-	protonCals, err := b.c.ListCalendars()
-	if err != nil {
-		return nil, fmt.Errorf("caldav/GetCalendar: error listing ProtonMail calendars: (%w)", err)
+func (b *backend) GetCalendar(ctx context.Context, p string) (*caldav.Calendar, error) {
+	calID, ok := splitCalendarPath(p)
+	if !ok {
+		return nil, badPath(p)
 	}
 
-	homeSetPath, err := b.CalendarHomeSetPath(ctx)
+	protonCals, err := b.client.ListCalendars()
 	if err != nil {
-		return nil, fmt.Errorf("caldav/GetCalendar: error getting calendar home set path: (%w)", err)
+		return nil, fmt.Errorf("caldav: listing calendars: %w", err)
 	}
-
-	id, _ := strings.CutSuffix(path, "/")
-	id, _ = strings.CutPrefix(id, homeSetPath)
 	for _, cal := range protonCals {
-		if cal.ID != id {
-			continue
-		}
-
-		calView, err := protonmail.FindMemberViewFromKeyring(cal.Members, b.privateKeys)
-		if err != nil {
-			return nil, fmt.Errorf("caldav/GetCalendar: error finding member view for calendar %s: (%w)", cal.ID, err)
-		}
-
-		caldavCal := caldav.Calendar{
-			Path:        homeSetPath + cal.ID,
-			Name:        calView.Name,
-			Description: calView.Description,
-		}
-
-		return &caldavCal, nil
-	}
-	return nil, errors.New("could not find calendar with path")
-}
-
-func (b *backend) GetCalendarObject(ctx context.Context, path string, req *caldav.CalendarCompRequest) (*caldav.CalendarObject, error) {
-	if calId, _, ok := b.splitObjectPath(ctx, path); ok {
-		if co, hit := b.lookup(calId, path); hit {
-			return co, nil
+		if cal.ID == calID {
+			return b.toCalendar(cal)
 		}
 	}
-	return b.fetchCalendarObject(ctx, path)
+	return nil, badPath(p)
 }
 
-// splitObjectPath extracts the calendar and event ids from an object path.
-func (b *backend) splitObjectPath(ctx context.Context, path string) (calId, evtId string, ok bool) {
-	homeSetPath, err := b.CalendarHomeSetPath(ctx)
+func (b *backend) toCalendar(cal *protonmail.Calendar) (*caldav.Calendar, error) {
+	view, err := protonmail.FindMemberViewFromKeyring(cal.Members, b.privateKeys)
 	if err != nil {
-		return "", "", false
+		return nil, fmt.Errorf("caldav: calendar %s: %w", cal.ID, err)
 	}
-	id, _ := strings.CutSuffix(path, "/")
-	id, _ = strings.CutSuffix(id, ".ics")
-	id, _ = strings.CutPrefix(id, homeSetPath)
-	parts := strings.Split(id, "/")
-	if len(parts) < 2 {
-		return "", "", false
-	}
-	return parts[0], parts[1], true
+	return &caldav.Calendar{
+		Path:                  calendarPath(cal.ID),
+		Name:                  view.Name,
+		Description:           view.Description,
+		SupportedComponentSet: []string{ical.CompEvent},
+	}, nil
 }
 
-func (b *backend) fetchCalendarObject(ctx context.Context, path string) (*caldav.CalendarObject, error) {
-	homeSetPath, err := b.CalendarHomeSetPath(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/GetCalendarObject: error getting calendar home set path: (%w)", err)
+func (b *backend) GetCalendarObject(ctx context.Context, p string, req *caldav.CalendarCompRequest) (*caldav.CalendarObject, error) {
+	calID, eventID, ok := splitObjectPath(p)
+	if !ok {
+		return nil, badPath(p)
 	}
-
-	calEvtId, _ := strings.CutSuffix(path, "/")
-	calEvtId, _ = strings.CutSuffix(calEvtId, ".ics")
-	calEvtId, _ = strings.CutPrefix(calEvtId, homeSetPath)
-	splitIds := strings.Split(calEvtId, "/")
-	if len(splitIds) < 2 {
-		return nil, fmt.Errorf("caldav/GetCalendarObject: bad path %s", path)
+	if co, hit := b.lookup(calID, p); hit {
+		return co, nil
 	}
-
-	calId, evtId := splitIds[0], splitIds[1]
-	event, err := b.c.GetCalendarEvent(calId, evtId)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/GetCalendarObject: error getting calendar event (calId: %s, evtId: %s): (%w)", calId, evtId, err)
-	}
-
-	bootstrap, err := b.c.BootstrapCalendar(calId)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/GetCalendarObject: error bootstrapping calendar (calId: %s): (%w)", calId, err)
-	}
-
-	calKr, err := bootstrap.DecryptKeyring(b.privateKeys)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/GetCalendarObject: error decrypting keyring: (%w)", err)
-	}
-
-	co, err := getCalendarObject(b, calId, calKr, event, bootstrap.CalendarSettings)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/GetCalendarObject: error creating calendar object: (%w)", err)
-	}
-
-	return co, nil
+	return b.fetchCalendarObject(calID, eventID)
 }
 
-func (b *backend) ListCalendarObjects(ctx context.Context, path string, req *caldav.CalendarCompRequest) ([]caldav.CalendarObject, error) {
-	homeSetPath, err := b.CalendarHomeSetPath(ctx)
+// fetchCalendarObject downloads and decrypts one event, bypassing the cache.
+func (b *backend) fetchCalendarObject(calID, eventID string) (*caldav.CalendarObject, error) {
+	event, err := b.client.GetCalendarEvent(calID, eventID)
 	if err != nil {
-		return nil, fmt.Errorf("caldav/ListCalendarObjects: error getting calendar home set path: (%w)", err)
+		var apiErr *protonmail.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == protonmail.CodeNotFound {
+			return nil, badPath(objectPath(calID, eventID))
+		}
+		return nil, fmt.Errorf("caldav: fetching event %s/%s: %w", calID, eventID, err)
 	}
 
-	calId, _ := strings.CutSuffix(path, "/")
-	calId, _ = strings.CutPrefix(calId, homeSetPath)
-
-	return b.objects(calId)
+	calKeys, settings, err := b.calendarKeys(b.cacheFor(calID), calID)
+	if err != nil {
+		return nil, fmt.Errorf("caldav: %w", err)
+	}
+	return b.calendarObject(calID, calKeys, event, settings)
 }
 
-func (b *backend) QueryCalendarObjects(ctx context.Context, path string, query *caldav.CalendarQuery) ([]caldav.CalendarObject, error) {
-	//TODO caldav backend lib inefficient for not passing query comprequest, possibly bump go-caldav but need to resolve breaking changes on carddav (would also allow create calendar support)
-	homeSetPath, err := b.CalendarHomeSetPath(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/QueryCalendarObjects: error getting calendar home set path: (%w)", err)
+func (b *backend) ListCalendarObjects(ctx context.Context, p string, req *caldav.CalendarCompRequest) ([]caldav.CalendarObject, error) {
+	calID, ok := splitCalendarPath(p)
+	if !ok {
+		return nil, badPath(p)
+	}
+	return b.objects(calID)
+}
+
+func (b *backend) QueryCalendarObjects(ctx context.Context, p string, query *caldav.CalendarQuery) ([]caldav.CalendarObject, error) {
+	calID, ok := splitCalendarPath(p)
+	if !ok {
+		return nil, badPath(p)
 	}
 
-	calId, _ := strings.CutSuffix(path, "/")
-	calId, _ = strings.CutPrefix(calId, homeSetPath)
-
+	// Only VEVENTs are served, so a query for anything else matches nothing.
 	if query.CompFilter.Name != ical.CompCalendar {
-		return nil, fmt.Errorf("caldav/QueryCalendarObjects: expected top-level comp to be VCALENDAR")
+		return nil, nil
 	}
-	if len(query.CompFilter.Comps) != 1 || query.CompFilter.Comps[0].Name != ical.CompEvent {
-		return nil, fmt.Errorf("caldav/QueryCalendarObjects: expected exactly one nested VEVENT comp")
-	}
-	cf := &query.CompFilter.Comps[0]
-
-	all, err := b.objects(calId)
-	if err != nil {
-		return nil, fmt.Errorf("caldav/QueryCalendarObjects: error loading calendar %s: (%w)", calId, err)
-	}
-	cos := make([]caldav.CalendarObject, 0, len(all))
-	for _, co := range all {
-		if overlaps(co, cf.Start, cf.End) {
-			cos = append(cos, co)
+	var eventFilter *caldav.CompFilter
+	for i := range query.CompFilter.Comps {
+		if query.CompFilter.Comps[i].Name == ical.CompEvent {
+			eventFilter = &query.CompFilter.Comps[i]
+			break
 		}
 	}
-	return cos, nil
+	if eventFilter == nil {
+		return nil, nil
+	}
+
+	all, err := b.objects(calID)
+	if err != nil {
+		return nil, err
+	}
+	matched := make([]caldav.CalendarObject, 0, len(all))
+	for _, co := range all {
+		if overlaps(co, eventFilter.Start, eventFilter.End) {
+			matched = append(matched, co)
+		}
+	}
+	return matched, nil
 }
 
-func (b *backend) PutCalendarObject(ctx context.Context, path string, calendar *ical.Calendar, opts *caldav.PutCalendarObjectOptions) (loc string, err error) {
-	//TODO: maybe impl opts?
-	//TODO: attendees maybe
-	homeSetPath, err := b.CalendarHomeSetPath(nil)
+func (b *backend) PutCalendarObject(ctx context.Context, p string, cal *ical.Calendar, opts *caldav.PutCalendarObjectOptions) (*caldav.CalendarObject, error) {
+	calID, eventID, ok := splitObjectPath(p)
+	if !ok {
+		return nil, badPath(p)
+	}
+
+	// A resource holds one event, or a repeating series plus its modified
+	// occurrences, each of which is a separate event at Proton.
+	var master *ical.Event
+	var exceptions []ical.Event
+	for _, ev := range cal.Events() {
+		if recurrenceID(&ev) == 0 {
+			if master != nil {
+				return nil, webdav.NewHTTPError(http.StatusBadRequest, errors.New("caldav: more than one series master in resource"))
+			}
+			master = &ev
+		} else {
+			exceptions = append(exceptions, ev)
+		}
+	}
+	if master == nil {
+		if len(exceptions) != 1 {
+			return nil, webdav.NewHTTPError(http.StatusBadRequest, errors.New("caldav: resource has no series master"))
+		}
+		master, exceptions = &exceptions[0], nil // a lone occurrence, written as is
+	}
+
+	existing, err := b.existingObject(calID, eventID)
 	if err != nil {
-		return "", fmt.Errorf("caldav/PutCalendarObject: error getting calendar home set path: (%w)", err)
+		return nil, err
+	}
+	if err := checkPreconditions(existing, opts); err != nil {
+		return nil, err
 	}
 
-	calEvtId, _ := strings.CutSuffix(path, "/")
-	calEvtId, _ = strings.CutSuffix(calEvtId, ".ics")
-	calEvtId, _ = strings.CutPrefix(calEvtId, homeSetPath)
-	splitIds := strings.Split(calEvtId, "/")
-	if len(splitIds) < 2 {
-		return "", fmt.Errorf("caldav/PutCalendarObject: bad path %s", path)
+	// One batch to Proton with only what changed: the series itself if it
+	// did, every occurrence that is new or different, and deletes for
+	// occurrences that are no longer in the resource.
+	uid := eventUID(master)
+	known := b.exceptionIDs(calID, uid)
+	var writes []protonmail.EventWrite
+	unchanged := func(id string, ev *ical.Event) bool {
+		if id == "" {
+			return false
+		}
+		cached, ok := b.cachedEvent(calID, id)
+		if !ok {
+			return false
+		}
+		if sameEvent(cached, ev) {
+			return true
+		}
+		log.Printf("caldav: writing %s/%s: changed %v", calID, id, changedProps(cached, ev))
+		return false
+	}
+	masterWritten := !unchanged(eventID, master)
+	if masterWritten {
+		writes = append(writes, protonmail.EventWrite{ID: eventID, Event: master})
+	}
+	for i := range exceptions {
+		rid := recurrenceID(&exceptions[i])
+		id := known[rid]
+		delete(known, rid)
+		if !unchanged(id, &exceptions[i]) {
+			writes = append(writes, protonmail.EventWrite{ID: id, Event: &exceptions[i]})
+		}
+	}
+	var removed []string
+	for _, id := range known {
+		writes = append(writes, protonmail.EventWrite{ID: id})
+		removed = append(removed, id)
 	}
 
-	calId, evtId := splitIds[0], splitIds[1]
-
-	events := calendar.Events()
-	if len(events) != 1 {
-		return "", fmt.Errorf("caldav/PutCalendarObject: expected PUT VCALENDAR to have exactly one VEVENT")
+	masterPath := objectPath(calID, eventID)
+	if len(writes) == 0 {
+		if served, ok := b.lookup(calID, masterPath); ok {
+			return served, nil // nothing changed
+		}
 	}
-	event := events[0]
 
-	newEvent, err := b.c.UpdateCalendarEvent(calId, evtId, event, b.privateKeys)
+	written, err := b.client.SyncCalendarEvents(calID, writes, b.privateKeys)
 	if err != nil {
-		return "", fmt.Errorf("caldav/PutCalendarObject: error updating calendar event (calId: %s, evtId: %s): (%w)", calId, evtId, err)
+		return nil, fmt.Errorf("caldav: writing %s/%s: %w", calID, eventID, err)
 	}
 
-	path = homeSetPath + calId + formatCalendarObjectPath(newEvent.ID)
-	b.evict(calId, evtId)
-	if co, ferr := b.fetchCalendarObject(ctx, path); ferr == nil {
-		b.store(calId, newEvent.ID, int64(newEvent.LastEditTime), co)
-	} else {
-		log.Printf("caldav/PutCalendarObject: cache update failed, refreshing in background: %v", ferr)
-		go b.refresh(calId)
+	// Proton assigns its own ids to new events, so the resource may now live
+	// at a different path than the one the client chose. The response carries
+	// the stored events, so the cache is updated from it without re-reading.
+	for _, id := range removed {
+		b.evict(calID, id)
 	}
-	return path, nil
+	fallback := &caldav.CalendarObject{Path: masterPath, Data: cal}
+	if masterWritten {
+		b.evict(calID, eventID)
+		master0 := written[0]
+		fallback = &caldav.CalendarObject{
+			Path:    objectPath(calID, master0.ID),
+			ModTime: master0.LastEditTime.Time(),
+			ETag:    etag(master0),
+			Data:    cal,
+		}
+	}
+	calKeys, settings, err := b.calendarKeys(b.cacheFor(calID), calID)
+	if err != nil {
+		log.Printf("caldav: %s written but cache not updated, refreshing calendar: %v", fallback.Path, err)
+		go b.refresh(calID)
+		return fallback, nil
+	}
+	for _, ev := range written {
+		if ev == nil {
+			continue // a delete
+		}
+		co, err := b.calendarObject(calID, calKeys, ev, settings)
+		if err != nil {
+			log.Printf("caldav: event %s/%s written but unreadable, refreshing calendar: %v", calID, ev.ID, err)
+			go b.refresh(calID)
+			return fallback, nil
+		}
+		b.store(calID, ev.ID, int64(ev.LastEditTime), co)
+	}
+	if served, ok := b.lookup(calID, fallback.Path); ok {
+		return served, nil // the merged resource, if the series has exceptions
+	}
+	return fallback, nil
 }
 
-func (b *backend) DeleteCalendarObject(ctx context.Context, path string) error {
-	homeSetPath, err := b.CalendarHomeSetPath(nil)
-	if err != nil {
-		return fmt.Errorf("caldav/DeleteCalendarObject: error getting calendar home set path: (%w)", err)
+// existingObject returns the current object at a path, or nil if there is
+// none. It consults the cache when the calendar is loaded and Proton
+// otherwise.
+func (b *backend) existingObject(calID, eventID string) (*caldav.CalendarObject, error) {
+	if co, ok := b.lookup(calID, objectPath(calID, eventID)); ok {
+		return co, nil
+	}
+	if b.isLoaded(calID) {
+		return nil, nil
+	}
+	co, err := b.fetchCalendarObject(calID, eventID)
+	if errors.Is(err, errNotFound) {
+		return nil, nil
+	}
+	return co, err
+}
+
+// checkPreconditions enforces the If-Match and If-None-Match headers of a
+// PUT, so a client never overwrites an edit it has not seen.
+func checkPreconditions(existing *caldav.CalendarObject, opts *caldav.PutCalendarObjectOptions) error {
+	if opts == nil {
+		return nil
+	}
+	failed := func(why string) error {
+		return webdav.NewHTTPError(http.StatusPreconditionFailed, errors.New("caldav: "+why))
 	}
 
-	calEvtId, _ := strings.CutSuffix(path, "/")
-	calEvtId, _ = strings.CutSuffix(calEvtId, ".ics")
-	calEvtId, _ = strings.CutPrefix(calEvtId, homeSetPath)
-	splitIds := strings.Split(calEvtId, "/")
-	if len(splitIds) < 2 {
-		return fmt.Errorf("caldav/DeleteCalendarObject: bad path %s", path)
+	if opts.IfNoneMatch.IsSet() && existing != nil {
+		if opts.IfNoneMatch.IsWildcard() {
+			return failed("resource already exists")
+		}
+		if ok, err := opts.IfNoneMatch.MatchETag(existing.ETag); err != nil || ok {
+			return failed("resource matches If-None-Match")
+		}
 	}
-
-	calId, evtId := splitIds[0], splitIds[1]
-
-	if err := b.c.DeleteCalendarEvent(calId, evtId); err != nil {
-		return fmt.Errorf("caldav/DeleteCalendarObject: error deleting calendar event (calId: %s, evtId: %s): (%w)", calId, evtId, err)
+	if opts.IfMatch.IsSet() {
+		if existing == nil {
+			return failed("resource does not exist")
+		}
+		if !opts.IfMatch.IsWildcard() {
+			if ok, err := opts.IfMatch.MatchETag(existing.ETag); err != nil || !ok {
+				return failed("resource has changed")
+			}
+		}
 	}
-
-	b.evict(calId, evtId)
 	return nil
 }
 
-func (b *backend) CurrentUserPrincipal(ctx context.Context) (string, error) {
-	return "/caldav/", nil
-}
-
-func NewHandler(c *protonmail.Client, privateKeys openpgp.EntityList, username string, events <-chan *protonmail.Event) http.Handler {
-	if len(privateKeys) == 0 {
-		panic("hydroxide/caldav: no private key available")
+func (b *backend) DeleteCalendarObject(ctx context.Context, p string) error {
+	calID, eventID, ok := splitObjectPath(p)
+	if !ok {
+		return badPath(p)
 	}
-
-	keyCache := map[string]openpgp.EntityList{username: privateKeys}
-	b := &backend{
-		c:           c,
-		privateKeys: privateKeys,
-		keyCache:    keyCache,
+	if err := b.client.DeleteCalendarEvent(calID, eventID); err != nil {
+		var apiErr *protonmail.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == protonmail.CodeNotFound {
+			b.evict(calID, eventID)
+			return badPath(p)
+		}
+		return fmt.Errorf("caldav: deleting event %s/%s: %w", calID, eventID, err)
 	}
-
-	if events != nil {
-		go b.receiveEvents(events)
-	}
-
-	go b.warm()
-
-	return &caldav.Handler{Backend: b}
+	b.evict(calID, eventID)
+	return nil
 }

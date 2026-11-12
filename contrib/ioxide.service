@@ -1,0 +1,40 @@
+# systemd unit for iOxide.
+#
+# Install:
+#   sudo useradd --system --home /var/lib/ioxide --create-home ioxide
+#   sudo install -m 755 ioxide /usr/local/bin/ioxide
+#   sudo -u ioxide ioxide auth <username>     # once, interactive
+#   sudo cp contrib/ioxide.service /etc/systemd/system/
+#   sudo systemctl enable --now ioxide
+#
+# The service listens on localhost only. Put a TLS-terminating reverse proxy
+# (or pass -tls-cert/-tls-key) in front of it before exposing it to clients.
+
+[Unit]
+Description=iOxide Proton Calendar CalDAV proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ioxide
+Group=ioxide
+ExecStart=/usr/local/bin/ioxide -listen 127.0.0.1:8081 serve
+Restart=on-failure
+RestartSec=5s
+
+# Credentials live in $XDG_CONFIG_HOME/ioxide (defaults to ~/.config/ioxide).
+Environment=HOME=/var/lib/ioxide
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ioxide
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

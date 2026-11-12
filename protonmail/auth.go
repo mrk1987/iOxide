@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -76,7 +76,7 @@ type PasswordMode int
 
 const (
 	PasswordSingle PasswordMode = 1
-	PasswordTwo                 = 2
+	PasswordTwo    PasswordMode = 2
 )
 
 type Auth struct {
@@ -144,8 +144,7 @@ func (c *Client) Auth(username, password string, info *AuthInfo) (*Auth, error) 
 	}
 
 	auth := respData.auth()
-	c.uid = auth.UID
-	c.accessToken = auth.AccessToken
+	c.setSession(auth.UID, auth.AccessToken)
 	return auth, nil
 }
 
@@ -274,7 +273,7 @@ func decryptPrivateKeyToken(key *PrivateKey, userKeyRing openpgp.EntityList) ([]
 		return nil, err
 	}
 
-	b, err := ioutil.ReadAll(md.UnverifiedBody)
+	b, err := io.ReadAll(md.UnverifiedBody)
 	if err != nil {
 		return nil, err
 	}
@@ -328,9 +327,10 @@ func unlockKeyRing(keys []*PrivateKey, userKeyRing openpgp.EntityList, keySalts 
 	return keyRing, nil
 }
 
+// Unlock decrypts the account's private keys with the mailbox password and
+// makes the client use auth's session.
 func (c *Client) Unlock(auth *Auth, keySalts map[string][]byte, passphrase string) (openpgp.EntityList, error) {
-	c.uid = auth.UID
-	c.accessToken = auth.AccessToken
+	c.setSession(auth.UID, auth.AccessToken)
 
 	u, err := c.GetCurrentUser()
 	if err != nil {
@@ -362,23 +362,5 @@ func (c *Client) Unlock(auth *Auth, keySalts map[string][]byte, passphrase strin
 		return nil, fmt.Errorf("failed to unlock any key")
 	}
 
-	c.keyRing = keyRing
-
 	return keyRing, nil
-}
-
-func (c *Client) Logout() error {
-	req, err := c.newRequest(http.MethodDelete, "/auth", nil)
-	if err != nil {
-		return err
-	}
-
-	if err := c.doJSON(req, nil); err != nil {
-		return err
-	}
-
-	c.uid = ""
-	c.accessToken = ""
-	c.keyRing = nil
-	return nil
 }

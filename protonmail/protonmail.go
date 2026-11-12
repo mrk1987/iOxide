@@ -6,14 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
-
-	"github.com/ProtonMail/go-crypto/openpgp"
-
-	"log"
 )
 
 const Version = 3
@@ -54,6 +51,17 @@ type HumanVerificationDetails struct {
 	HumanVerificationToken   string   `json:"HumanVerificationToken"`
 }
 
+// Proton API error codes the proxy reacts to.
+const (
+	// CodeHumanVerificationRequired gates a login behind a CAPTCHA or similar.
+	CodeHumanVerificationRequired = 9001
+	// CodeInvalidRefreshToken means the stored session can no longer be refreshed.
+	CodeInvalidRefreshToken = 10013
+	// CodeNotFound is returned for a calendar event that does not exist.
+	CodeNotFound = 2061
+)
+
+// APIError is an error reported by the Proton API.
 type APIError struct {
 	Code    int
 	Message string
@@ -65,11 +73,8 @@ func (err *APIError) Error() string {
 	return fmt.Sprintf("[%v] %v", err.Code, err.Message)
 }
 
+// Timestamp is a Unix time as used by the Proton API.
 type Timestamp int64
-
-func NewTimestamp(t time.Time) Timestamp {
-	return Timestamp(t.Unix())
-}
 
 func (t Timestamp) Time() time.Time {
 	return time.Unix(int64(t), 0)
@@ -82,14 +87,30 @@ type Client struct {
 	Debug      bool
 
 	HTTPClient *http.Client
-	ReAuth     func() error
+	// ReAuth is called when a request fails with 401 to renew the session.
+	ReAuth func() error
 
+	sessionMu   sync.RWMutex
 	uid         string
 	accessToken string
-	keyRing     openpgp.EntityList
+
+	reAuthMu sync.Mutex
 
 	hvToken string
 	hvType  string
+}
+
+func (c *Client) setSession(uid, accessToken string) {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	c.uid = uid
+	c.accessToken = accessToken
+}
+
+func (c *Client) session() (uid, accessToken string) {
+	c.sessionMu.RLock()
+	defer c.sessionMu.RUnlock()
+	return c.uid, c.accessToken
 }
 
 // SetSession seeds the client with an existing authenticated session (a UID and
@@ -98,8 +119,7 @@ type Client struct {
 //
 // Ported from mathewcsims/protoxide (commit 1064101) — see README lineage notes.
 func (c *Client) SetSession(uid, accessToken string) {
-	c.uid = uid
-	c.accessToken = accessToken
+	c.setSession(uid, accessToken)
 }
 
 // SetHumanVerification attaches a token the account owner obtained by completing
@@ -119,9 +139,10 @@ func (c *Client) ClearHumanVerification() {
 }
 
 func (c *Client) setRequestAuthorization(req *http.Request) {
-	if c.uid != "" && c.accessToken != "" {
-		req.Header.Set("X-Pm-Uid", c.uid)
-		req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	uid, accessToken := c.session()
+	if uid != "" && accessToken != "" {
+		req.Header.Set("X-Pm-Uid", uid)
+		req.Header.Set("Authorization", "Bearer "+accessToken)
 	}
 }
 
@@ -163,7 +184,7 @@ func (c *Client) newJSONRequest(method, path string, body interface{}) (*http.Re
 
 	req.Header.Set("Content-Type", "application/json")
 	req.GetBody = func() (io.ReadCloser, error) {
-		return ioutil.NopCloser(bytes.NewReader(b)), nil
+		return io.NopCloser(bytes.NewReader(b)), nil
 	}
 	return req, nil
 }
@@ -182,12 +203,11 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	}
 
 	// Check if access token has expired
-	_, hasAuth := req.Header["Authorization"]
+	authorization, hasAuth := req.Header["Authorization"]
 	canRetry := req.Body == nil || req.GetBody != nil
 	if resp.StatusCode == http.StatusUnauthorized && hasAuth && c.ReAuth != nil && canRetry {
 		resp.Body.Close()
-		c.accessToken = ""
-		if err := c.ReAuth(); err != nil {
+		if err := c.reAuth(authorization[0]); err != nil {
 			return resp, err
 		}
 		c.setRequestAuthorization(req) // Access token has changed
@@ -202,6 +222,21 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	}
 
 	return resp, nil
+}
+
+// reAuth renews the session once, however many requests fail at the same
+// time: later callers find the token already replaced and return at once.
+func (c *Client) reAuth(staleAuthorization string) error {
+	c.reAuthMu.Lock()
+	defer c.reAuthMu.Unlock()
+
+	uid, accessToken := c.session()
+	if "Bearer "+accessToken != staleAuthorization {
+		return nil
+	}
+	// Drop the expired token so the renewal request does not carry it.
+	c.setSession(uid, "")
+	return c.ReAuth()
 }
 
 func (c *Client) doJSON(req *http.Request, respData interface{}) error {

@@ -10,11 +10,14 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
 	"github.com/emersion/go-ical"
 	"io"
+	"log"
 	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 const calendarPath = "/calendar/v1"
@@ -184,12 +187,14 @@ type CalendarNotification struct {
 	Trigger string
 }
 
+// FindMemberViewFromKeyring returns the calendar membership belonging to one
+// of the addresses in the keyring.
 func FindMemberViewFromKeyring(members []CalendarMemberView, kr openpgp.KeyRing) (*CalendarMemberView, error) {
-	for _, _member := range members {
+	for i := range members {
 		for _, userKey := range kr.DecryptionKeys() {
 			for _, identity := range userKey.Entity.Identities {
-				if _member.Email == identity.UserId.Email {
-					return &_member, nil
+				if identity.UserId != nil && members[i].Email == identity.UserId.Email {
+					return &members[i], nil
 				}
 			}
 		}
@@ -197,19 +202,20 @@ func FindMemberViewFromKeyring(members []CalendarMemberView, kr openpgp.KeyRing)
 	return nil, fmt.Errorf("FindMemberViewFromKeyring: could not find a CalendarMemberView for the provided keyring")
 }
 
+// DecryptKeyring unlocks the calendar's private keys with the member
+// passphrase encrypted to the user's keyring.
 func (bootstrap *CalendarBootstrap) DecryptKeyring(userKr openpgp.KeyRing) (openpgp.KeyRing, error) {
+	member, err := FindMemberViewFromKeyring(bootstrap.Members, userKr)
+	if err != nil {
+		return nil, fmt.Errorf("DecryptKeyring: failed to find member view: (%w)", err)
+	}
+
 	var calKr openpgp.EntityList
 	for _, key := range bootstrap.Keys {
 		var passphrase *CalendarMemberPassphrase
-
-		member, err := FindMemberViewFromKeyring(bootstrap.Members, userKr)
-		if err != nil {
-			return nil, fmt.Errorf("DecryptKeyring: failed to find member view: (%w)", err)
-		}
-
-		for _, _passphrase := range bootstrap.Passphrase.MemberPassphrases {
-			if _passphrase.MemberID == member.ID {
-				passphrase = &_passphrase
+		for i := range bootstrap.Passphrase.MemberPassphrases {
+			if bootstrap.Passphrase.MemberPassphrases[i].MemberID == member.ID {
+				passphrase = &bootstrap.Passphrase.MemberPassphrases[i]
 				break
 			}
 		}
@@ -231,15 +237,6 @@ func (bootstrap *CalendarBootstrap) DecryptKeyring(userKr openpgp.KeyRing) (open
 		if err != nil {
 			return nil, fmt.Errorf("DecryptKeyring: failed to read passphrase body: (%w)", err)
 		}
-
-		/*		signatureData, err := armor.Decode(strings.NewReader(passphrase.Signature))
-				if err != nil {
-					return nil, err
-				}
-				_, err = openpgp.CheckArmoredDetachedSignature(userKr, bytes.NewReader(passphraseBytes), signatureData.Body, nil)
-				if err != nil {
-					return nil, err
-				}*/
 
 		keyKr, err := openpgp.ReadArmoredKeyRing(strings.NewReader(key.PrivateKey))
 		if err != nil {
@@ -345,49 +342,64 @@ func (c *Client) BootstrapCalendar(id string) (*CalendarBootstrap, error) {
 	return respData.CalendarBootstrap, nil
 }
 
-type CalendarEventFilter struct {
-	Start, End     Timestamp
-	Timezone       string
-	Page, PageSize int
-}
+const (
+	// eventPageSize is the largest page Proton serves.
+	eventPageSize = 100
+	// eventPageWorkers is how many pages are fetched at once. Proton answers
+	// each page slowly, so fetching one after another took minutes for a few
+	// thousand events.
+	eventPageWorkers = 4
+)
 
-func (c *Client) ListCalendarEvents(calendarID string, filter *CalendarEventFilter) ([]*CalendarEvent, error) {
-	const pageSize = 100
+// ListCalendarEvents returns every event in a calendar.
+//
+// Proton paginates the listing and gives no total, so pages are fetched in
+// rounds of eventPageWorkers until a round contains a short or empty page.
+func (c *Client) ListCalendarEvents(calendarID string) ([]*CalendarEvent, error) {
 	var all []*CalendarEvent
-
-	// Proton paginates /events (default page size 100). Loop through every page
-	// so future-dated events and calendars with >100 events are not silently
-	// truncated (which previously hid newer events from CalDAV clients).
-	for page := 0; ; page++ {
-		v := url.Values{}
-		if filter != nil {
-			v.Set("Start", strconv.FormatInt(int64(filter.Start), 10))
-			v.Set("End", strconv.FormatInt(int64(filter.End), 10))
-			v.Set("Timezone", filter.Timezone)
+	for first := 0; ; first += eventPageWorkers {
+		pages := make([][]*CalendarEvent, eventPageWorkers)
+		errs := make([]error, eventPageWorkers)
+		var wg sync.WaitGroup
+		for i := range eventPageWorkers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				pages[i], errs[i] = c.listCalendarEventsPage(calendarID, first+i)
+			}()
 		}
-		v.Set("Page", strconv.Itoa(page))
-		v.Set("PageSize", strconv.Itoa(pageSize))
+		wg.Wait()
 
-		req, err := c.newRequest(http.MethodGet, calendarPath+"/"+calendarID+"/events?"+v.Encode(), nil)
-		if err != nil {
-			return nil, fmt.Errorf("ListCalendarEvents: failed to create new request for calendarID %s: (%w)", calendarID, err)
-		}
-
-		var respData struct {
-			resp
-			Events []*CalendarEvent
-		}
-		if err := c.doJSON(req, &respData); err != nil {
-			return nil, fmt.Errorf("ListCalendarEvents: failed to execute JSON request for calendarID %s: (%w)", calendarID, err)
-		}
-
-		all = append(all, respData.Events...)
-		if len(respData.Events) < pageSize {
-			break
+		for i := range eventPageWorkers {
+			if errs[i] != nil {
+				return nil, errs[i]
+			}
+			all = append(all, pages[i]...)
+			if len(pages[i]) < eventPageSize {
+				return all, nil
+			}
 		}
 	}
+}
 
-	return all, nil
+func (c *Client) listCalendarEventsPage(calendarID string, page int) ([]*CalendarEvent, error) {
+	v := url.Values{}
+	v.Set("Page", strconv.Itoa(page))
+	v.Set("PageSize", strconv.Itoa(eventPageSize))
+
+	req, err := c.newRequest(http.MethodGet, calendarPath+"/"+calendarID+"/events?"+v.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("ListCalendarEvents: calendar %s page %d: %w", calendarID, page, err)
+	}
+
+	var respData struct {
+		resp
+		Events []*CalendarEvent
+	}
+	if err := c.doJSON(req, &respData); err != nil {
+		return nil, fmt.Errorf("ListCalendarEvents: calendar %s page %d: %w", calendarID, page, err)
+	}
+	return respData.Events, nil
 }
 
 func (c *Client) GetCalendarEvent(calendarID string, eventID string) (*CalendarEvent, error) {
@@ -429,7 +441,6 @@ type CalendarEventCreateOrUpdateData struct {
 	SharedEventContent   []CalendarEventCard `json:",omitempty"`
 	Permissions          int                 `json:",omitempty"`
 	IsOrganizer          int                 `json:",omitempty"`
-	// AttendeesEventContent, AddedProtonAttendees, Attendees, CancelledOccurrenceContent, IsPersonalSingleEdit, RemovedAttendeeAddresses ...
 }
 
 type CalendarEventSyncReq struct {
@@ -485,29 +496,18 @@ var requiredSet = map[string]struct{}{
 	"dtstamp": {},
 }
 
-/*var personalSignedFields = []string{
-	"uid",
-	"dtstamp",
-}
-var personalEncryptedFields = []string{}*/
-
 var usedFields = concat([][]string{
 	sharedSignedFields,
 	sharedEncryptedFields,
-
 	calendarSignedFields,
 	calendarEncryptedFields,
-	/*
-		personalSignedFields,
-		personalEncryptedFields,*/
 })
 
-// ... attendeesSigned/EncryptedFields
 func pickProps(event *ical.Event, propNames []string) *ical.Component {
 	evt := ical.NewEvent()
 	for _, propName := range propNames {
 		props := event.Props.Values(propName)
-		if props != nil && len(props) > 0 {
+		if len(props) > 0 {
 			evt.Props[props[0].Name] = props
 		}
 	}
@@ -523,7 +523,7 @@ func makeIcal(props ical.Props, components ...*ical.Component) *ical.Calendar {
 	}
 
 	cal.Props.SetText(ical.PropVersion, "2.0")
-	cal.Props.SetText(ical.PropProductID, "-//Proton AG//web-calendar 5.0.33.2//EN") // TODO: change?
+	cal.Props.SetText(ical.PropProductID, "-//Proton AG//web-calendar 5.0.33.2//EN")
 
 	if components != nil {
 		cal.Children = append(cal.Children, components...)
@@ -541,17 +541,16 @@ func getEventParts(event *ical.Event) (map[CalendarEventCardType]*ical.Calendar,
 	calendarPart[CalendarEventCardSigned] = makeIcal(nil, pickProps(event, calendarSignedFields))
 	calendarPart[CalendarEventCardEncryptedAndSigned] = makeIcal(nil, pickProps(event, calendarEncryptedFields))
 
-	// No personal part support for now
-	/*personalPart := make(map[CalendarEventCardType]*ical.Calendar)
-	personalPart[CalendarEventCardSigned] = pickProps(event, personalSignedFields)
-	personalPart[CalendarEventCardEncryptedAndSigned] = pickProps(event, personalEncryptedFields)
-	*/
-
+	// Personal and attendee parts are not supported. Every property that is
+	// not placed in a specific part goes into the encrypted shared part. Work
+	// on a copy: the caller's event must come out of this unchanged.
+	remaining := maps.Clone(event.Props)
 	for _, propName := range usedFields {
-		event.Props.Del(strings.ToUpper(propName))
+		remaining.Del(strings.ToUpper(propName))
 	}
-	for name, props := range event.Props {
-		sharedPart[CalendarEventCardEncryptedAndSigned].Events()[0].Component.Props[strings.ToUpper(name)] = append(sharedPart[CalendarEventCardEncryptedAndSigned].Props[strings.ToUpper(name)], props...)
+	encryptedShared := sharedPart[CalendarEventCardEncryptedAndSigned].Events()[0].Component
+	for name, props := range remaining {
+		encryptedShared.Props[strings.ToUpper(name)] = props
 	}
 
 	return sharedPart, calendarPart
@@ -618,8 +617,12 @@ func decryptSessionKey(sessionKey string, calKr openpgp.KeyRing) (*packet.Encryp
 
 	switch pkt := pkt.(type) {
 	case *packet.EncryptedKey:
-		decryptionKey := calKr.KeysById(pkt.KeyId)[0]
-		if decryptionKey.PrivateKey.Encrypted {
+		keys := calKr.KeysById(pkt.KeyId)
+		if len(keys) == 0 {
+			return nil, fmt.Errorf("decryptSessionKey: no calendar key with KeyId %d", pkt.KeyId)
+		}
+		decryptionKey := keys[0]
+		if decryptionKey.PrivateKey == nil || decryptionKey.PrivateKey.Encrypted {
 			return nil, fmt.Errorf("decryptSessionKey: decryption private key must be decrypted for KeyId %d", pkt.KeyId)
 		}
 
@@ -653,7 +656,10 @@ func getOrGenerateSessionKey(keyPacket string, calKr openpgp.KeyRing, config *pa
 			return nil, "", fmt.Errorf("getOrGenerateSessionKey: failed to generate unencrypted key: (%w)", err)
 		}
 
-		calKeys := getCalKeys(calKr)
+		calKeys, err := firstEntity(calKr)
+		if err != nil {
+			return nil, "", fmt.Errorf("getOrGenerateSessionKey: calendar keyring: %w", err)
+		}
 		calEncryptionKey, ok := encryptionKey(calKeys, config.Now())
 		if !ok {
 			return nil, "", fmt.Errorf("getOrGenerateSessionKey: could not find encryption key for calendar keys")
@@ -667,12 +673,14 @@ func getOrGenerateSessionKey(keyPacket string, calKr openpgp.KeyRing, config *pa
 	return sessionKey, encryptedSessionKey, nil
 }
 
-func getCalKeys(calKr openpgp.KeyRing) *openpgp.Entity {
-	return calKr.(openpgp.EntityList)[0] // Is the first key always the correct one?
-}
-
-func getUserKeys(userKr openpgp.KeyRing) *openpgp.Entity {
-	return userKr.(openpgp.EntityList)[0] // Is the first key always the correct one?
+// firstEntity returns the primary entity of a keyring: Proton lists the
+// primary key first for both user and calendar keyrings.
+func firstEntity(kr openpgp.KeyRing) (*openpgp.Entity, error) {
+	entities, ok := kr.(openpgp.EntityList)
+	if !ok || len(entities) == 0 {
+		return nil, errors.New("keyring is empty")
+	}
+	return entities[0], nil
 }
 
 func encryptPart(part string, key *packet.EncryptedKey, signer *openpgp.Entity, config *packet.Config) (string, error) {
@@ -731,27 +739,19 @@ func signPart(part string, signer *openpgp.Entity, config *packet.Config) (strin
 	return signatureBuf.String(), nil
 }
 
-func makeUpdateData(c *Client, calID string, oldEvent *CalendarEvent, event ical.Event, userKr openpgp.KeyRing) (*CalendarEventCreateOrUpdateData, string, error) {
+// makeUpdateData encrypts and signs an event for upload. oldEvent is the
+// stored version being replaced, or nil for a new event.
+func makeUpdateData(oldEvent *CalendarEvent, event ical.Event, calKr openpgp.KeyRing, userKr openpgp.KeyRing) (*CalendarEventCreateOrUpdateData, error) {
 	isCreate := oldEvent == nil
-
-	bootstrap, err := c.BootstrapCalendar(calID)
-	if err != nil {
-		return nil, "", fmt.Errorf("makeUpdateData: failed to bootstrap calendar with ID %s: (%w)", calID, err)
-	}
-
-	calKr, err := bootstrap.DecryptKeyring(userKr)
-	if err != nil {
-		return nil, "", fmt.Errorf("makeUpdateData: failed to decrypt keyring: (%w)", err)
-	}
 
 	sharedPartCal, calendarPartCal := getEventParts(&event)
 	sharedPart, err := encodePart(sharedPartCal)
 	if err != nil {
-		return nil, "", fmt.Errorf("makeUpdateData: failed to encode shared part: (%w)", err)
+		return nil, fmt.Errorf("makeUpdateData: failed to encode shared part: (%w)", err)
 	}
 	calendarPart, err := encodePartOptimized(calendarPartCal)
 	if err != nil {
-		return nil, "", fmt.Errorf("makeUpdateData: failed to encode calendar part: (%w)", err)
+		return nil, fmt.Errorf("makeUpdateData: failed to encode calendar part: (%w)", err)
 	}
 
 	config := &packet.Config{}
@@ -790,11 +790,14 @@ func makeUpdateData(c *Client, calID string, oldEvent *CalendarEvent, event ical
 		data.IsOrganizer = 1
 	}
 
-	userKeys := getUserKeys(userKr)
+	userKeys, err := firstEntity(userKr)
+	if err != nil {
+		return nil, fmt.Errorf("makeUpdateData: user keyring: %w", err)
+	}
 	if signedSharedPart, ok := sharedPart[CalendarEventCardSigned]; ok && signedSharedPart != "" {
 		signature, err := signPart(signedSharedPart, userKeys, config)
 		if err != nil {
-			return nil, "", fmt.Errorf("makeUpdateData: failed to sign shared part: (%w)", err)
+			return nil, fmt.Errorf("makeUpdateData: failed to sign shared part: (%w)", err)
 		}
 
 		card := CalendarEventCard{
@@ -812,7 +815,7 @@ func makeUpdateData(c *Client, calID string, oldEvent *CalendarEvent, event ical
 		}
 		sharedSessionKey, encryptedSharedSessionKey, err := getOrGenerateSessionKey(sharedKeyPacket, calKr, config)
 		if err != nil {
-			return nil, "", fmt.Errorf("makeUpdateData: failed to get or generate session key for shared part: (%w)", err)
+			return nil, fmt.Errorf("makeUpdateData: failed to get or generate session key for shared part: (%w)", err)
 		}
 
 		if isCreate || sharedKeyPacket == "" {
@@ -821,12 +824,12 @@ func makeUpdateData(c *Client, calID string, oldEvent *CalendarEvent, event ical
 
 		signature, err := signPart(encryptedSharedPart, userKeys, config)
 		if err != nil {
-			return nil, "", fmt.Errorf("makeUpdateData: failed to sign encrypted shared part: (%w)", err)
+			return nil, fmt.Errorf("makeUpdateData: failed to sign encrypted shared part: (%w)", err)
 		}
 
 		encryptedData, err := encryptPart(encryptedSharedPart, sharedSessionKey, nil, config)
 		if err != nil {
-			return nil, "", fmt.Errorf("makeUpdateData: failed to encrypt shared part: (%w)", err)
+			return nil, fmt.Errorf("makeUpdateData: failed to encrypt shared part: (%w)", err)
 		}
 
 		card := CalendarEventCard{
@@ -841,7 +844,7 @@ func makeUpdateData(c *Client, calID string, oldEvent *CalendarEvent, event ical
 	if signedCalendarPart, ok := calendarPart[CalendarEventCardSigned]; ok && signedCalendarPart != "" {
 		signature, err := signPart(signedCalendarPart, userKeys, config)
 		if err != nil {
-			return nil, "", fmt.Errorf("makeUpdateData: failed to sign calendar part: (%w)", err)
+			return nil, fmt.Errorf("makeUpdateData: failed to sign calendar part: (%w)", err)
 		}
 
 		card := CalendarEventCard{
@@ -859,7 +862,7 @@ func makeUpdateData(c *Client, calID string, oldEvent *CalendarEvent, event ical
 		}
 		calendarSessionKey, encryptedCalendarSessionKey, err := getOrGenerateSessionKey(calendarKeyPacket, calKr, config)
 		if err != nil {
-			return nil, "", fmt.Errorf("makeUpdateData: failed to get or generate session key for calendar part: (%w)", err)
+			return nil, fmt.Errorf("makeUpdateData: failed to get or generate session key for calendar part: (%w)", err)
 		}
 
 		if isCreate || calendarKeyPacket == "" {
@@ -868,12 +871,12 @@ func makeUpdateData(c *Client, calID string, oldEvent *CalendarEvent, event ical
 
 		signature, err := signPart(encryptedCalendarPart, userKeys, config)
 		if err != nil {
-			return nil, "", fmt.Errorf("makeUpdateData: failed to sign encrypted calendar part: (%w)", err)
+			return nil, fmt.Errorf("makeUpdateData: failed to sign encrypted calendar part: (%w)", err)
 		}
 
 		encryptedData, err := encryptPart(encryptedCalendarPart, calendarSessionKey, nil, config)
 		if err != nil {
-			return nil, "", fmt.Errorf("makeUpdateData: failed to encrypt calendar part: (%w)", err)
+			return nil, fmt.Errorf("makeUpdateData: failed to encrypt calendar part: (%w)", err)
 		}
 
 		card := CalendarEventCard{
@@ -885,58 +888,89 @@ func makeUpdateData(c *Client, calID string, oldEvent *CalendarEvent, event ical
 		data.CalendarEventContent = append(data.CalendarEventContent, card)
 	}
 
-	// Attendees encrypted and clear parts ...
-	// Removed attendees emails ...
-	// Attendees encrypted session keys ...
-	// Cancelled occurrence parts ...
-
-	member, err := FindMemberViewFromKeyring(bootstrap.Members, userKr)
-	if err != nil {
-		return nil, "", fmt.Errorf("makeUpdateData: failed to find member view from keyring: (%w)", err)
-	}
-
-	return &data, member.ID, nil
+	return &data, nil
 }
 
-func (c *Client) UpdateCalendarEvent(calID string, eventID string, event ical.Event, userKr openpgp.KeyRing) (*CalendarEvent, error) {
-	oldEvent, err := c.GetCalendarEvent(calID, eventID)
-	isCreate := false
-	var apiErr *APIError
-	if errors.As(err, &apiErr) && apiErr.Code == 2061 {
-		isCreate = true
-	} else if err != nil {
-		return nil, fmt.Errorf("UpdateCalendarEvent: could not get old calendar event: (%w)", err)
-	}
+// EventWrite is one entry of a batch write: create (empty ID),
+// update (existing ID) or delete (nil Event).
+type EventWrite struct {
+	ID    string
+	Event *ical.Event
+}
 
-	data, memberID, err := makeUpdateData(c, calID, oldEvent, event, userKr)
-	if err != nil {
-		return nil, fmt.Errorf("UpdateCalendarEvent: could not make update data: (%w)", err)
-	}
+type CalendarEventDeleteSyncEntry struct {
+	ID             string
+	DeletionReason int
+}
 
-	var entry interface{}
-	if isCreate {
-		entry = CalendarEventCreateSyncEntry{
-			Event: data,
+// SyncCalendarEvents applies several writes to a calendar in one request,
+// as Proton's own client does. The result has one entry per write, in the
+// same order; deletes yield nil. Any rejected entry fails the whole call.
+func (c *Client) SyncCalendarEvents(calID string, writes []EventWrite, userKr openpgp.KeyRing) ([]*CalendarEvent, error) {
+	if len(writes) == 0 {
+		return nil, nil
+	}
+	start := time.Now()
+
+	entries := make([]interface{}, len(writes))
+	var memberID string
+
+	needKeys := false
+	for _, w := range writes {
+		if w.Event != nil {
+			needKeys = true
 		}
-	} else {
-		entry = CalendarEventUpdateSyncEntry{
-			ID:    eventID,
-			Event: data,
+	}
+	if needKeys {
+		bootstrap, err := c.BootstrapCalendar(calID)
+		if err != nil {
+			return nil, fmt.Errorf("SyncCalendarEvents: bootstrapping calendar %s: %w", calID, err)
+		}
+		calKr, err := bootstrap.DecryptKeyring(userKr)
+		if err != nil {
+			return nil, fmt.Errorf("SyncCalendarEvents: decrypting keys of calendar %s: %w", calID, err)
+		}
+		member, err := FindMemberViewFromKeyring(bootstrap.Members, userKr)
+		if err != nil {
+			return nil, fmt.Errorf("SyncCalendarEvents: %w", err)
+		}
+		memberID = member.ID
+
+		// Each update needs the stored event first; fetch them in parallel.
+		errs := make([]error, len(writes))
+		sem := make(chan struct{}, eventPageWorkers)
+		var wg sync.WaitGroup
+		for i, w := range writes {
+			if w.Event == nil {
+				continue
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				entries[i], errs[i] = c.prepareWrite(calID, w, calKr, userKr)
+			}()
+		}
+		wg.Wait()
+		for _, err := range errs {
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	for i, w := range writes {
+		if w.Event == nil {
+			entries[i] = CalendarEventDeleteSyncEntry{ID: w.ID}
 		}
 	}
 
-	body := CalendarEventSyncReq{
-		MemberID: memberID,
-		Events: []interface{}{
-			entry,
-		},
-	}
-
+	prepared := time.Now()
+	body := CalendarEventSyncReq{MemberID: memberID, Events: entries}
 	req, err := c.newJSONRequest(http.MethodPut, calendarPath+"/"+calID+"/events/sync", body)
 	if err != nil {
-		return nil, fmt.Errorf("UpdateCalendarEvent: could not create JSON request: (%w)", err)
+		return nil, fmt.Errorf("SyncCalendarEvents: %w", err)
 	}
-
 	var respData struct {
 		resp
 		Responses []struct {
@@ -947,41 +981,71 @@ func (c *Client) UpdateCalendarEvent(calID string, eventID string, event ical.Ev
 			}
 		}
 	}
-
 	if err := c.doJSON(req, &respData); err != nil {
-		return nil, fmt.Errorf("UpdateCalendarEvent: could not send JSON request: (%w)", err)
+		return nil, fmt.Errorf("SyncCalendarEvents: %w", err)
 	}
+	log.Printf("protonmail: synced %d events to calendar %s: prepared in %s, stored in %s", len(writes), calID,
+		prepared.Sub(start).Round(time.Millisecond), time.Since(prepared).Round(time.Millisecond))
 
-	if len(respData.Responses) != 1 || respData.Responses[0].Response.Event == nil {
-		return nil, fmt.Errorf("UpdateCalendarEvent: no event on events sync response")
+	results := make([]*CalendarEvent, len(writes))
+	answered := 0
+	for _, r := range respData.Responses {
+		if r.Index < 0 || r.Index >= len(writes) {
+			return nil, fmt.Errorf("SyncCalendarEvents: response for unknown entry %d", r.Index)
+		}
+		if err := r.Response.Err(); err != nil {
+			return nil, fmt.Errorf("SyncCalendarEvents: Proton rejected entry %d: %w", r.Index, err)
+		}
+		if writes[r.Index].Event != nil && r.Response.Event == nil {
+			return nil, fmt.Errorf("SyncCalendarEvents: no event in response for entry %d (code %d)", r.Index, r.Response.Code)
+		}
+		results[r.Index] = r.Response.Event
+		answered++
 	}
-
-	return respData.Responses[0].Response.Event, nil
+	if answered != len(writes) {
+		return nil, fmt.Errorf("SyncCalendarEvents: %d writes, %d responses", len(writes), answered)
+	}
+	return results, nil
 }
 
-type CalendarEventDeleteSyncEntry struct {
-	ID             string
-	DeletionReason int
-}
-
-func (c *Client) DeleteCalendarEvent(calID string, eventID string) error {
-	body := CalendarEventSyncReq{
-		Events: []interface{}{
-			CalendarEventDeleteSyncEntry{
-				ID:             eventID,
-				DeletionReason: 0,
-			},
-		},
+// prepareWrite encrypts one event for the batch, as a create or an update
+// depending on whether Proton already has it.
+func (c *Client) prepareWrite(calID string, w EventWrite, calKr, userKr openpgp.KeyRing) (interface{}, error) {
+	var oldEvent *CalendarEvent
+	if w.ID != "" {
+		old, err := c.GetCalendarEvent(calID, w.ID)
+		var apiErr *APIError
+		switch {
+		case errors.As(err, &apiErr) && apiErr.Code == CodeNotFound:
+			// A client-chosen id for a new event; Proton assigns its own.
+		case err != nil:
+			return nil, fmt.Errorf("SyncCalendarEvents: fetching event %s: %w", w.ID, err)
+		default:
+			oldEvent = old
+		}
 	}
 
-	req, err := c.newJSONRequest(http.MethodPut, calendarPath+"/"+calID+"/events/sync", body)
+	data, err := makeUpdateData(oldEvent, *w.Event, calKr, userKr)
 	if err != nil {
-		return fmt.Errorf("DeleteCalendarEvent: could not create JSON request: (%w)", err)
+		return nil, fmt.Errorf("SyncCalendarEvents: preparing event %s: %w", w.ID, err)
 	}
-
-	if _, err := c.do(req); err != nil {
-		return fmt.Errorf("DeleteCalendarEvent: could not send JSON request: (%w)", err)
+	if oldEvent == nil {
+		return CalendarEventCreateSyncEntry{Event: data}, nil
 	}
+	return CalendarEventUpdateSyncEntry{ID: w.ID, Event: data}, nil
+}
 
-	return nil
+// UpdateCalendarEvent creates or replaces one event.
+func (c *Client) UpdateCalendarEvent(calID string, eventID string, event ical.Event, userKr openpgp.KeyRing) (*CalendarEvent, error) {
+	results, err := c.SyncCalendarEvents(calID, []EventWrite{{ID: eventID, Event: &event}}, userKr)
+	if err != nil {
+		return nil, err
+	}
+	return results[0], nil
+}
+
+// DeleteCalendarEvent deletes one event.
+func (c *Client) DeleteCalendarEvent(calID string, eventID string) error {
+	_, err := c.SyncCalendarEvents(calID, []EventWrite{{ID: eventID}}, nil)
+	return err
 }

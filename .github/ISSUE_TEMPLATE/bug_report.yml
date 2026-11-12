@@ -1,0 +1,33 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never paste your bridge password, Proton password, access or refresh tokens, or the contents of `auth.json`.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: iOxide version
+      description: Release tag or commit hash.
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: CalDAV client
+      placeholder: iOS 18.1 Calendar, Thunderbird 128, ...
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server log
+      description: Output of `ioxide serve` around the time of the problem. Add `-debug` only if you have removed tokens from the output.
+      render: text

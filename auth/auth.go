@@ -1,283 +1,263 @@
+// Package auth stores Proton credentials encrypted under a bridge password and
+// authenticates CalDAV clients that present it.
+//
+// The bridge password is a random 256-bit key, shown once at login. Clients
+// send it as their HTTP Basic password. It never reaches Proton: it only
+// unlocks the locally stored session, which in turn holds what Proton needs.
 package auth
 
 import (
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
+	"sync"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
-	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/nacl/secretbox"
 
-	"github.com/mrk1987/ioxide/config"
 	"github.com/mrk1987/ioxide/protonmail"
 )
 
-func authFilePath() (string, error) {
-	return config.Path("auth.json")
-}
+const (
+	keySize   = 32
+	nonceSize = 24
+)
 
+// ErrUnauthorized is returned when the username or bridge password is wrong.
+var ErrUnauthorized = errors.New("invalid username or password")
+
+// CachedAuth is everything needed to resume a Proton session without the
+// user: the session tokens, the passwords to re-login when they expire, and
+// the key salts to unlock the account's keys.
 type CachedAuth struct {
 	protonmail.Auth
 	LoginPassword   string
 	MailboxPassword string
 	KeySalts        map[string][]byte
-	// TODO: add padding
 }
 
-func readCachedAuths() (map[string]string, error) {
-	p, err := authFilePath()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get auth file path: %v", err)
+// GeneratePassword returns a fresh secret key and its bridge-password form.
+func GeneratePassword() (secretKey *[keySize]byte, password string, err error) {
+	var key [keySize]byte
+	if _, err := io.ReadFull(rand.Reader, key[:]); err != nil {
+		return nil, "", fmt.Errorf("generating key: %w", err)
 	}
-
-	f, err := os.Open(p)
-	if os.IsNotExist(err) {
-		return nil, nil
-	} else if err != nil {
-		return nil, fmt.Errorf("failed to open cached auth file: %v", err)
-	}
-	defer f.Close()
-
-	auths := make(map[string]string)
-	if err := json.NewDecoder(f).Decode(&auths); err != nil {
-		return nil, fmt.Errorf("failed to read cached auth file: %v", err)
-	}
-
-	return auths, nil
+	return &key, base64.StdEncoding.EncodeToString(key[:]), nil
 }
 
-// saveAuths atomically replaces the cached auth file. It writes to a
-// temporary file in the same directory and renames it over the target, so a
-// crash or reboot mid-write leaves the previous auth.json intact rather than
-// truncated. A truncated auth.json costs an interactive re-login (password
-// plus TOTP), which is why this is worth the extra care.
-func saveAuths(auths map[string]string) error {
-	p, err := authFilePath()
-	if err != nil {
-		return fmt.Errorf("failed to get auth file path: %v", err)
+func parsePassword(password string) (*[keySize]byte, error) {
+	raw, err := base64.StdEncoding.DecodeString(password)
+	if err != nil || len(raw) != keySize {
+		return nil, ErrUnauthorized
 	}
-
-	f, err := os.CreateTemp(filepath.Dir(p), ".auth.json.tmp-*")
-	if err != nil {
-		return fmt.Errorf("failed to create temporary auth file: %v", err)
-	}
-	tmp := f.Name()
-
-	// auth.json holds a refresh token and the login password.
-	if err := f.Chmod(0600); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return fmt.Errorf("failed to set permissions on cached auth file: %v", err)
-	}
-	if err := json.NewEncoder(f).Encode(auths); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return fmt.Errorf("failed to write cached auth file: %v", err)
-	}
-	// Flush before the rename, so the rename cannot expose an empty file.
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return fmt.Errorf("failed to flush cached auth file: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("failed to close cached auth file: %v", err)
-	}
-	if err := os.Rename(tmp, p); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("failed to replace cached auth file: %v", err)
-	}
-	return nil
+	var key [keySize]byte
+	copy(key[:], raw)
+	return &key, nil
 }
 
-func encrypt(msg []byte, secretKey *[32]byte) (string, error) {
-	var nonce [24]byte
+func encrypt(msg []byte, secretKey *[keySize]byte) (string, error) {
+	var nonce [nonceSize]byte
 	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
-		return "", fmt.Errorf("failed to generate nonce: %v", err)
+		return "", fmt.Errorf("generating nonce: %w", err)
 	}
-
-	encrypted := secretbox.Seal(nonce[:], msg, &nonce, secretKey)
-	return base64.StdEncoding.EncodeToString(encrypted), nil
+	sealed := secretbox.Seal(nonce[:], msg, &nonce, secretKey)
+	return base64.StdEncoding.EncodeToString(sealed), nil
 }
 
-func decrypt(encryptedString string, secretKey *[32]byte) ([]byte, error) {
-	encrypted, err := base64.StdEncoding.DecodeString(encryptedString)
+func decrypt(encoded string, secretKey *[keySize]byte) ([]byte, error) {
+	sealed, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return nil, fmt.Errorf("invalid encrypted string: %v", err)
+		return nil, fmt.Errorf("invalid encrypted data: %w", err)
 	}
-
-	var nonce [24]byte
-	copy(nonce[:], encrypted[:24])
-	decrypted, ok := secretbox.Open(nil, encrypted[24:], &nonce, secretKey)
+	if len(sealed) < nonceSize {
+		return nil, errors.New("invalid encrypted data: too short")
+	}
+	var nonce [nonceSize]byte
+	copy(nonce[:], sealed[:nonceSize])
+	msg, ok := secretbox.Open(nil, sealed[nonceSize:], &nonce, secretKey)
 	if !ok {
-		return nil, errors.New("decryption error")
+		return nil, errors.New("decryption failed")
 	}
-	return decrypted, nil
+	return msg, nil
 }
 
-func EncryptAndSave(auth *CachedAuth, username string, secretKey *[32]byte) error {
-	cleartext, err := json.Marshal(auth)
+// EncryptAndSave stores the credentials for username, encrypted under
+// secretKey, replacing any existing entry.
+func EncryptAndSave(cached *CachedAuth, username string, secretKey *[keySize]byte) error {
+	cleartext, err := json.Marshal(cached)
 	if err != nil {
-		return fmt.Errorf("failed to format cached auth: %v", err)
+		return fmt.Errorf("encoding credentials: %w", err)
 	}
-
 	encrypted, err := encrypt(cleartext, secretKey)
 	if err != nil {
 		return err
 	}
 
-	auths, err := readCachedAuths()
+	store, err := loadStore()
 	if err != nil {
 		return err
 	}
-
-	if auths == nil {
-		auths = make(map[string]string)
-	}
-	auths[username] = encrypted
-
-	return saveAuths(auths)
+	store[username] = encrypted
+	return saveStore(store)
 }
 
-func authenticate(c *protonmail.Client, cachedAuth *CachedAuth, username string) (openpgp.EntityList, error) {
-	auth, err := c.AuthRefresh(&cachedAuth.Auth)
-	if apiErr, ok := err.(*protonmail.APIError); ok && apiErr.Code == 10013 {
-		// Invalid refresh token, re-authenticate
+// ListUsernames returns the usernames with stored credentials.
+func ListUsernames() ([]string, error) {
+	store, err := loadStore()
+	if err != nil {
+		return nil, err
+	}
+	usernames := make([]string, 0, len(store))
+	for username := range store {
+		usernames = append(usernames, username)
+	}
+	return usernames, nil
+}
+
+// authenticate refreshes the stored session, falling back to a full login
+// with the stored password when the refresh token is no longer valid, and
+// unlocks the account's keys. It updates cached with the new session.
+func authenticate(c *protonmail.Client, cached *CachedAuth, username string) (openpgp.EntityList, error) {
+	if cached.RefreshToken == "" {
+		// An imported session may have no refresh token. Use its access
+		// token as long as it lasts.
+		return c.Unlock(&cached.Auth, cached.KeySalts, cached.MailboxPassword)
+	}
+
+	auth, err := c.AuthRefresh(&cached.Auth)
+	var apiErr *protonmail.APIError
+	if errors.As(err, &apiErr) && apiErr.Code == protonmail.CodeInvalidRefreshToken {
 		authInfo, err := c.AuthInfo(username)
 		if err != nil {
-			return nil, fmt.Errorf("cannot re-authenticate: failed to get auth info: %v", err)
+			return nil, fmt.Errorf("re-authenticating: %w", err)
 		}
-
-		auth, err = c.Auth(username, cachedAuth.LoginPassword, authInfo)
+		auth, err = c.Auth(username, cached.LoginPassword, authInfo)
 		if err != nil {
-			return nil, fmt.Errorf("cannot re-authenticate: %v", err)
+			return nil, fmt.Errorf("re-authenticating: %w", err)
 		}
-
 		if auth.TwoFactor.Enabled != 0 {
-			return nil, fmt.Errorf("cannot re-authenticate: two factor authentication enabled, please login again manually")
+			return nil, errors.New("re-authenticating: two-factor authentication is enabled, log in again with `ioxide auth`")
 		}
 	} else if err != nil {
 		return nil, err
 	}
-	cachedAuth.Auth = *auth
+	cached.Auth = *auth
 
-	return c.Unlock(auth, cachedAuth.KeySalts, cachedAuth.MailboxPassword)
+	return c.Unlock(auth, cached.KeySalts, cached.MailboxPassword)
 }
 
-func ListUsernames() ([]string, error) {
-	auths, err := readCachedAuths()
+// Session is a logged-in Proton session for one user.
+type Session struct {
+	Client      *protonmail.Client
+	PrivateKeys openpgp.EntityList
+	// CacheKey protects data the server stores on disk for this user. It is
+	// derived from the bridge password, so it is never stored anywhere.
+	CacheKey [keySize]byte
+
+	keyDigest [sha256.Size]byte
+}
+
+func deriveCacheKey(secretKey *[keySize]byte) ([keySize]byte, error) {
+	var key [keySize]byte
+	derived, err := hkdf.Key(sha256.New, secretKey[:], nil, "ioxide calendar cache v1", keySize)
 	if err != nil {
-		return nil, err
+		return key, fmt.Errorf("deriving cache key: %w", err)
 	}
-
-	l := make([]string, 0, len(auths))
-	for username, _ := range auths {
-		l = append(l, username)
-	}
-	return l, nil
+	copy(key[:], derived)
+	return key, nil
 }
 
-func GeneratePassword() (secretKey *[32]byte, password string, err error) {
-	var key [32]byte
-	if _, err = io.ReadFull(rand.Reader, key[:]); err != nil {
-		return nil, "", fmt.Errorf("failed to generate key: %v", err)
-	}
-	password = base64.StdEncoding.EncodeToString(key[:])
-	return &key, password, nil
-}
-
-type session struct {
-	hashedSecretKey []byte
-	c               *protonmail.Client
-	privateKeys     openpgp.EntityList
-}
-
-var ErrUnauthorized = errors.New("Invalid username or password")
-
+// Manager authenticates users by bridge password and keeps one logged-in
+// Proton client per user.
 type Manager struct {
 	newClient func() *protonmail.Client
-	sessions  map[string]*session
+
+	mu       sync.Mutex
+	sessions map[string]*Session
 }
 
-func (m *Manager) Auth(username, password string) (*protonmail.Client, openpgp.EntityList, error) {
-	var secretKey [32]byte
-	passwordBytes, err := base64.StdEncoding.DecodeString(password)
-	if err != nil || len(passwordBytes) != len(secretKey) {
-		return nil, nil, ErrUnauthorized
-	}
-	copy(secretKey[:], passwordBytes)
-
-	s, ok := m.sessions[username]
-	if ok {
-		err := bcrypt.CompareHashAndPassword(s.hashedSecretKey, secretKey[:])
-		if err != nil {
-			return nil, nil, ErrUnauthorized
-		}
-	} else {
-		auths, err := readCachedAuths()
-		if err != nil && !os.IsNotExist(err) {
-			return nil, nil, err
-		}
-
-		encrypted, ok := auths[username]
-		if !ok {
-			return nil, nil, ErrUnauthorized
-		}
-
-		decrypted, err := decrypt(encrypted, &secretKey)
-		if err != nil {
-			return nil, nil, ErrUnauthorized
-		}
-
-		var cachedAuth CachedAuth
-		if err := json.Unmarshal(decrypted, &cachedAuth); err != nil {
-			return nil, nil, err
-		}
-
-		c := m.newClient()
-		c.ReAuth = func() error {
-			if _, err := authenticate(c, &cachedAuth, username); err != nil {
-				return err
-			}
-			return EncryptAndSave(&cachedAuth, username, &secretKey)
-		}
-
-		// authenticate updates cachedAuth with the new refresh token
-		privateKeys, err := authenticate(c, &cachedAuth, username)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		if err := EncryptAndSave(&cachedAuth, username, &secretKey); err != nil {
-			return nil, nil, err
-		}
-
-		hashed, err := bcrypt.GenerateFromPassword(secretKey[:], bcrypt.DefaultCost)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		s = &session{
-			c:               c,
-			privateKeys:     privateKeys,
-			hashedSecretKey: hashed,
-		}
-		m.sessions[username] = s
-	}
-
-	return s.c, s.privateKeys, nil
-}
-
+// NewManager returns a Manager that creates Proton clients with newClient.
 func NewManager(newClient func() *protonmail.Client) *Manager {
 	return &Manager{
 		newClient: newClient,
-		sessions:  make(map[string]*session),
+		sessions:  map[string]*Session{},
 	}
+}
+
+// Auth checks the bridge password for username and returns the user's
+// session. The first call for a user resumes the stored Proton session;
+// later calls reuse it.
+func (m *Manager) Auth(username, password string) (*Session, error) {
+	secretKey, err := parsePassword(password)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(secretKey[:])
+
+	// Opening a session rotates the refresh token, so two first requests
+	// arriving together must not both do it. Holding the lock throughout
+	// serialises them; the common case, a cached session, is quick.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if s, ok := m.sessions[username]; ok && subtle.ConstantTimeCompare(s.keyDigest[:], digest[:]) == 1 {
+		return s, nil
+	}
+
+	// No session yet, or the bridge password changed because `ioxide auth`
+	// was run again while serving. Either way the stored credentials decide.
+	s, err := m.openSession(username, secretKey)
+	if err != nil {
+		return nil, err
+	}
+	s.keyDigest = digest
+	if s.CacheKey, err = deriveCacheKey(secretKey); err != nil {
+		return nil, err
+	}
+	m.sessions[username] = s
+	return s, nil
+}
+
+func (m *Manager) openSession(username string, secretKey *[keySize]byte) (*Session, error) {
+	store, err := loadStore()
+	if err != nil {
+		return nil, err
+	}
+	encrypted, ok := store[username]
+	if !ok {
+		return nil, ErrUnauthorized
+	}
+	decrypted, err := decrypt(encrypted, secretKey)
+	if err != nil {
+		return nil, ErrUnauthorized
+	}
+	var cached CachedAuth
+	if err := json.Unmarshal(decrypted, &cached); err != nil {
+		return nil, fmt.Errorf("decoding stored credentials: %w", err)
+	}
+
+	c := m.newClient()
+	c.ReAuth = func() error {
+		if _, err := authenticate(c, &cached, username); err != nil {
+			return err
+		}
+		return EncryptAndSave(&cached, username, secretKey)
+	}
+
+	privateKeys, err := authenticate(c, &cached, username)
+	if err != nil {
+		return nil, err
+	}
+	// authenticate rotated the refresh token; persist it.
+	if err := EncryptAndSave(&cached, username, secretKey); err != nil {
+		return nil, err
+	}
+
+	return &Session{Client: c, PrivateKeys: privateKeys}, nil
 }
