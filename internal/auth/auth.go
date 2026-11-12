@@ -90,6 +90,21 @@ func decrypt(encoded string, secretKey *[keySize]byte) ([]byte, error) {
 // EncryptAndSave stores the credentials for username, encrypted under
 // secretKey, replacing any existing entry.
 func EncryptAndSave(cached *CachedAuth, username string, secretKey *[keySize]byte) error {
+	return encryptAndSave(cached, username, secretKey, false)
+}
+
+// CreateAndSave refuses to replace an account added by another process while
+// desktop sign-in was in progress.
+func CreateAndSave(cached *CachedAuth, username string, secretKey *[keySize]byte) error {
+	return encryptAndSave(cached, username, secretKey, true)
+}
+
+func encryptAndSave(cached *CachedAuth, username string, secretKey *[keySize]byte, createOnly bool) error {
+	unlock, err := lockStore()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	cleartext, err := json.Marshal(cached)
 	if err != nil {
 		return fmt.Errorf("encoding credentials: %w", err)
@@ -102,6 +117,9 @@ func EncryptAndSave(cached *CachedAuth, username string, secretKey *[keySize]byt
 	store, err := loadStore()
 	if err != nil {
 		return err
+	}
+	if _, exists := store[username]; createOnly && exists {
+		return errors.New("this account was added by another iOxide process; unlock the existing account instead")
 	}
 	store[username] = encrypted
 	return saveStore(store)

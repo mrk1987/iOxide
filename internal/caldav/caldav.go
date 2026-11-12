@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/emersion/go-ical"
@@ -35,8 +36,11 @@ type backend struct {
 	keysMu     sync.Mutex
 	authorKeys map[string]openpgp.EntityList // public keys of other event authors, by email
 
-	cacheMu sync.Mutex
-	cals    map[string]*calCache
+	cacheMu   sync.Mutex
+	cals      map[string]*calCache
+	listed    bool
+	lastSync  time.Time
+	syncError string
 
 	// On-disk copy of the cache; see diskcache.go.
 	cachePath string
@@ -50,6 +54,55 @@ type backend struct {
 // client and keys it is given. The decrypted calendars are cached on disk
 // under cacheKey; with a nil key nothing is written to disk.
 func NewHandler(client *protonmail.Client, privateKeys openpgp.EntityList, username string, cacheKey *[32]byte) (http.Handler, error) {
+	return NewHandlerContext(context.Background(), client, privateKeys, username, cacheKey)
+}
+
+// Handler owns a CalDAV handler and its background cache workers.
+type Handler struct {
+	http.Handler
+	backend *backend
+	cancel  context.CancelFunc
+	done    chan struct{}
+}
+
+// Close cancels the workers and waits for their final encrypted cache save.
+func (h *Handler) Close() { h.cancel(); <-h.done }
+
+// CacheStatus contains measured cache state, not estimated progress.
+type CacheStatus struct {
+	Listed     bool      `json:"listed"`
+	LastSync   time.Time `json:"lastSync"`
+	SyncError  string    `json:"syncError"`
+	Calendars  int       `json:"calendars"`
+	Loaded     int       `json:"loaded"`
+	Events     int       `json:"events"`
+	LastLoaded time.Time `json:"lastLoaded"`
+}
+
+func (h *Handler) Status() CacheStatus {
+	var status CacheStatus
+	h.backend.cacheMu.Lock()
+	defer h.backend.cacheMu.Unlock()
+	status.Listed = h.backend.listed
+	status.LastSync = h.backend.lastSync
+	status.SyncError = h.backend.syncError
+	status.Calendars = len(h.backend.cals)
+	for _, c := range h.backend.cals {
+		c.mu.RLock()
+		if c.loaded {
+			status.Loaded++
+		}
+		status.Events += len(c.events)
+		if c.fetched.After(status.LastLoaded) {
+			status.LastLoaded = c.fetched
+		}
+		c.mu.RUnlock()
+	}
+	return status
+}
+
+// NewHandlerContext ties cache workers to an owning server's lifetime.
+func NewHandlerContext(ctx context.Context, client *protonmail.Client, privateKeys openpgp.EntityList, username string, cacheKey *[32]byte) (*Handler, error) {
 	if len(privateKeys) == 0 {
 		return nil, errors.New("caldav: no private key available")
 	}
@@ -70,9 +123,18 @@ func NewHandler(client *protonmail.Client, privateKeys openpgp.EntityList, usern
 			b.cachePath = p
 		}
 	}
-	go b.warm()
-
-	return withPropPatch(&caldav.Handler{Backend: b}), nil
+	ctx, cancel := context.WithCancel(ctx)
+	h := &Handler{Handler: withPropPatch(&caldav.Handler{Backend: b}), backend: b, cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(h.done)
+		var workers sync.WaitGroup
+		workers.Add(1)
+		go func() { defer workers.Done(); b.saver(ctx) }()
+		b.warm(ctx)
+		workers.Wait()
+		b.saveDiskCache()
+	}()
+	return h, nil
 }
 
 func identityEmails(keys openpgp.EntityList) map[string]bool {

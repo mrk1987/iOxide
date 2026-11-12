@@ -322,16 +322,20 @@ func (b *backend) evict(calID, eventID string) {
 
 // warm restores the on-disk cache, loads every calendar that is still
 // missing, then keeps all of them current from Proton's change log.
-func (b *backend) warm() {
+func (b *backend) warm(ctx context.Context) {
 	b.loadDiskCache()
-	go b.saver()
 
 	var calIDs []string
 	var listedAt time.Time
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+		syncOK := true
 		if time.Since(listedAt) >= listInterval {
-			cals, err := b.ListCalendars(context.Background())
+			cals, err := b.ListCalendars(ctx)
 			if err != nil {
+				syncOK = false
 				b.logf("listing calendars: %v", err)
 			} else {
 				calIDs = calIDs[:0]
@@ -341,10 +345,16 @@ func (b *backend) warm() {
 					}
 				}
 				listedAt = time.Now()
+				b.cacheMu.Lock()
+				b.listed = true
+				b.cacheMu.Unlock()
 			}
 		}
 
 		for _, calID := range calIDs {
+			if ctx.Err() != nil {
+				return
+			}
 			c := b.cacheFor(calID)
 			c.mu.RLock()
 			stale := c.loaded && time.Since(c.fetched) >= fullRefreshInterval
@@ -357,10 +367,23 @@ func (b *backend) warm() {
 				err = b.sync(calID)
 			}
 			if err != nil {
+				syncOK = false
 				b.logf("updating calendar %s: %v", calID, err)
 			}
 		}
-		time.Sleep(syncInterval)
+		b.cacheMu.Lock()
+		if syncOK {
+			b.lastSync = time.Now()
+			b.syncError = ""
+		} else {
+			b.syncError = "Could not refresh calendar data. Check your connection or sign in again."
+		}
+		b.cacheMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(syncInterval):
+		}
 	}
 }
 

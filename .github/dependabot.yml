@@ -11,6 +11,13 @@ updates:
     directory: /
     schedule:
       interval: weekly
+  - package-ecosystem: gomod
+    directory: /desktop
+    schedule:
+      interval: weekly
+    groups:
+      desktop-go-dependencies:
+        patterns: ["*"]
   - package-ecosystem: docker
     directory: /
     schedule:

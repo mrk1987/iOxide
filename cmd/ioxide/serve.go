@@ -9,12 +9,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/mrk1987/ioxide/internal/auth"
-	"github.com/mrk1987/ioxide/internal/caldav"
+	"github.com/mrk1987/ioxide/internal/bridge"
+	"github.com/mrk1987/ioxide/internal/protonmail"
 )
 
 func cmdServe(opts *options) error {
@@ -22,7 +22,15 @@ func cmdServe(opts *options) error {
 		return errors.New("-tls-cert and -tls-key must be given together")
 	}
 
-	var handler http.Handler = newServer(auth.NewManager(opts.newClient))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	owned := bridge.NewHandler(ctx, auth.NewManager(func() *protonmail.Client {
+		c := opts.newClient()
+		c.Context = ctx
+		return c
+	}))
+	defer func() { stop(); owned.Close() }()
+	var handler http.Handler = owned
 	if opts.logRequests {
 		handler = logRequests(handler)
 	}
@@ -32,9 +40,6 @@ func cmdServe(opts *options) error {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	errc := make(chan error, 1)
 	go func() {
@@ -64,56 +69,7 @@ func cmdServe(opts *options) error {
 	}
 }
 
-// server authenticates every request with HTTP Basic auth against the stored
-// accounts and routes it to a per-user CalDAV handler.
-type server struct {
-	auth *auth.Manager
-
-	mu       sync.Mutex
-	handlers map[string]http.Handler
-}
-
-func newServer(manager *auth.Manager) *server {
-	return &server{auth: manager, handlers: map[string]http.Handler{}}
-}
-
-func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	username, password, ok := r.BasicAuth()
-	if !ok {
-		s.unauthorized(w)
-		return
-	}
-
-	session, err := s.auth.Auth(username, password)
-	if errors.Is(err, auth.ErrUnauthorized) {
-		s.unauthorized(w)
-		return
-	}
-	if err != nil {
-		log.Printf("authenticating %s: %v", username, err)
-		http.Error(w, "authentication failed", http.StatusInternalServerError)
-		return
-	}
-
-	s.mu.Lock()
-	h, ok := s.handlers[username]
-	if !ok {
-		h, err = caldav.NewHandler(session.Client, session.PrivateKeys, username, &session.CacheKey)
-		if err == nil {
-			s.handlers[username] = h
-		}
-	}
-	s.mu.Unlock()
-	if err != nil {
-		log.Printf("starting CalDAV handler for %s: %v", username, err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	h.ServeHTTP(w, r)
-}
-
-func (s *server) unauthorized(w http.ResponseWriter) {
-	w.Header().Set("WWW-Authenticate", `Basic realm="ioxide"`)
-	http.Error(w, "credentials required", http.StatusUnauthorized)
+// newServer is retained for CLI tests; the desktop uses the same handler.
+func newServer(manager *auth.Manager) *bridge.Handler {
+	return bridge.NewHandler(context.Background(), manager)
 }

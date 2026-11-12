@@ -2,6 +2,7 @@ package caldav
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -245,9 +246,16 @@ func (b *backend) saveDiskCache() {
 }
 
 // saver writes the cache to disk periodically while it keeps changing.
-func (b *backend) saver() {
+func (b *backend) saver(ctx context.Context) {
+	ticker := time.NewTicker(saveInterval)
+	defer ticker.Stop()
 	for {
-		time.Sleep(saveInterval)
-		b.saveDiskCache()
+		select {
+		case <-ctx.Done():
+			b.saveDiskCache()
+			return
+		case <-ticker.C:
+			b.saveDiskCache()
+		}
 	}
 }

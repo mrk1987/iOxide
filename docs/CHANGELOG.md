@@ -6,8 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Separate desktop application with iOxide branding, guided account setup,
+  conditional browser verification/2FA/mailbox-password screens, CalDAV client
+  guides, Tailscale detection/help and HTTPS connection checks.
+- Native tray menu, OS credential-store integration, optional start at login,
+  masked connection credentials and measured calendar/client status.
+- Desktop CI builds for Windows, macOS and Linux on amd64 and ARM64.
+
 ### Changed
 
+- Shared the authenticated CalDAV handler between CLI and desktop; tied background
+  cache workers to the owning server's lifetime and locked credential updates
+  across processes.
 - macOS download filenames use `macos` instead of Go's internal `darwin` name.
 - Updated checkout, Go setup, artifact upload/download and release publishing
   actions. Release workflow changes now build and verify all six archives

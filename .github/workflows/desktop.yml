@@ -1,0 +1,76 @@
+name: Desktop CI
+
+on:
+  push:
+    branches: [main]
+    paths: ["desktop/**", "internal/**", "go.mod", "go.sum", ".github/workflows/desktop.yml"]
+  pull_request:
+    paths: ["desktop/**", "internal/**", "go.mod", "go.sum", ".github/workflows/desktop.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Desktop (${{ matrix.platform }}/${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, goos: windows, platform: windows, arch: amd64 }
+          - { runner: windows-latest, goos: windows, platform: windows, arch: arm64 }
+          - { runner: macos-latest, goos: darwin, platform: macos, arch: amd64 }
+          - { runner: macos-latest, goos: darwin, platform: macos, arch: arm64 }
+          - { runner: ubuntu-24.04, goos: linux, platform: linux, arch: amd64 }
+          - { runner: ubuntu-24.04-arm, goos: linux, platform: linux, arch: arm64 }
+    defaults:
+      run:
+        working-directory: desktop
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: desktop/go.mod
+          cache-dependency-path: |
+            go.sum
+            desktop/go.sum
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev libx11-dev
+      - name: Test and vet desktop module
+        run: |
+          go test -count=1 ./...
+          go vet ./...
+          go mod tidy -diff
+      - name: Generate native icons
+        run: go run "github.com/wailsapp/wails/v3/cmd/wails3@$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)" generate icons -input frontend/assets/ioxide-icon.png -windowsfilename build/icon.ico -macfilename build/icons.icns
+      - name: Windows resources
+        if: runner.os == 'Windows'
+        run: go run "github.com/wailsapp/wails/v3/cmd/wails3@$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v3)" generate syso -manifest build/app.manifest -icon build/icon.ico -arch ${{ matrix.arch }} -out rsrc_windows_${{ matrix.arch }}.syso
+      - name: Build desktop
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          name="ioxide-desktop-${GOOS}-${GOARCH}"
+          if [ "$GOOS" = "windows" ]; then
+            go build -trimpath -tags production -ldflags '-s -w -H windowsgui' -o "../dist/${name}/ioxide-desktop.exe" .
+          elif [ "$GOOS" = "darwin" ]; then
+            name="ioxide-desktop-macos-${GOARCH}"
+            mkdir -p "../dist/${name}/iOxide.app/Contents/MacOS" "../dist/${name}/iOxide.app/Contents/Resources"
+            go build -trimpath -tags production -ldflags '-s -w' -o "../dist/${name}/iOxide.app/Contents/MacOS/ioxide-desktop" .
+            cp build/Info.plist "../dist/${name}/iOxide.app/Contents/"
+            cp build/icons.icns "../dist/${name}/iOxide.app/Contents/Resources/"
+            codesign --force --deep --sign - "../dist/${name}/iOxide.app"
+          else
+            go build -trimpath -tags production -ldflags '-s -w' -o "../dist/${name}/ioxide-desktop" .
+          fi
+          cp ../LICENSE ../docs/desktop.md "../dist/${name}/"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ioxide-desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/ioxide-desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14

@@ -4,6 +4,7 @@ package protonmail
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -83,6 +84,8 @@ func (t Timestamp) Time() time.Time {
 
 // Client accesses Proton's account and calendar APIs.
 type Client struct {
+	// Context bounds requests to the lifetime of the owning bridge instance.
+	Context    context.Context
 	RootURL    string
 	AppVersion string
 	Debug      bool
@@ -148,7 +151,11 @@ func (c *Client) setRequestAuthorization(req *http.Request) {
 }
 
 func (c *Client) newRequest(method, path string, body io.Reader) (*http.Request, error) {
-	req, err := http.NewRequest(method, c.RootURL+path, body)
+	ctx := c.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.RootURL+path, body)
 	if err != nil {
 		return nil, err
 	}

@@ -43,6 +43,11 @@ break it at any time.
 
 ## Install
 
+The current release is the **CLI** (`ioxide`). A separate **desktop app**
+(`ioxide-desktop`, or `iOxide.app` on macOS) adds guided setup and tray controls.
+It is in development; see the [desktop guide](docs/desktop.md) for builds and
+preview instructions.
+
 Download and extract the archive for your system from the
 [latest release](https://github.com/mrk1987/iOxide/releases/latest):
 
@@ -194,6 +199,7 @@ The source is organised as follows:
 
 ```text
 cmd/ioxide/       Command-line entry point
+desktop/          Separate desktop app and UI build module
 internal/        Authentication, CalDAV server and Proton API client
 deploy/          systemd service
 docs/            Changelog and artwork

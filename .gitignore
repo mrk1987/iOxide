@@ -16,3 +16,16 @@ coverage.*
 
 # Never commit credentials
 auth.json
+
+# Local UI references (contain account information)
+/ProtonMailBridge*.png
+/Taskbar.png
+/DESKTOP-HANDOFF.local.md
+
+# Desktop build output
+/desktop/bin/
+/desktop/build/bin/
+/desktop/build/icon.ico
+/desktop/build/icons.icns
+/desktop/*.syso
+/.playwright-mcp/

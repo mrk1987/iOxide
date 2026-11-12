@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,7 +9,44 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
+
+	"github.com/gofrs/flock"
 )
+
+// lockStore protects read-modify-write operations across CLI and desktop processes.
+func lockStore() (func(), error) {
+	p, err := authFilePath()
+	if err != nil {
+		return nil, err
+	}
+	lock := flock.New(p + ".lock")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ok, err := lock.TryLockContext(ctx, 25*time.Millisecond)
+	if err != nil {
+		return nil, fmt.Errorf("locking credentials: %w", err)
+	}
+	if !ok {
+		return nil, errors.New("credentials are being updated by another iOxide process; try again")
+	}
+	return func() { _ = lock.Unlock() }, nil
+}
+
+// Delete removes a locally stored account. It does not revoke other Proton sessions.
+func Delete(username string) error {
+	unlock, err := lockStore()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	store, err := loadStore()
+	if err != nil {
+		return err
+	}
+	delete(store, username)
+	return saveStore(store)
+}
 
 const (
 	configDirName = "ioxide"
