@@ -377,3 +377,6 @@ body:has(.preview-bar) .app-shell, body:has(.preview-bar) .dashboard { height: c
 .sidebar-heading { margin-top: 8px; }
 .choice-icon.app-icon { width: 44px; height: 44px; flex: 0 0 44px; }
 .choice-icon.app-icon img { display: block; width: 40px; height: 40px; object-fit: contain; }
+
+.content-panel, .dashboard-main { position: relative; }
+.toast { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); width: max-content; max-width: calc(100% - 48px); padding: 9px 16px; border: 1px solid var(--success); border-radius: var(--radius); background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.5; text-align: center; box-shadow: 0 8px 24px rgb(0 0 0 / .4); z-index: 5; }

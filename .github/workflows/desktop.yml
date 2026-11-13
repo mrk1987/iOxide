@@ -2,10 +2,11 @@ name: Desktop CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/desktop-ui]
     paths: ["desktop/**", "internal/**", "go.mod", "go.sum", ".github/workflows/desktop.yml"]
   pull_request:
     paths: ["desktop/**", "internal/**", "go.mod", "go.sum", ".github/workflows/desktop.yml"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -58,6 +59,9 @@ jobs:
           if [ "$GOOS" = "windows" ]; then
             go build -trimpath -tags production -ldflags '-s -w -H windowsgui' -o "../dist/${name}/ioxide-desktop.exe" .
           elif [ "$GOOS" = "darwin" ]; then
+            # The macOS window needs cgo, which Go turns off when the target
+            # architecture differs from the runner's.
+            export CGO_ENABLED=1
             name="ioxide-desktop-macos-${GOARCH}"
             mkdir -p "../dist/${name}/iOxide.app/Contents/MacOS" "../dist/${name}/iOxide.app/Contents/Resources"
             go build -trimpath -tags production -ldflags '-s -w' -o "../dist/${name}/iOxide.app/Contents/MacOS/ioxide-desktop" .
