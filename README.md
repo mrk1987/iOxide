@@ -41,14 +41,41 @@ nothing else.
 iOxide is unofficial and uses Proton's private web API. A Proton change can
 break it at any time.
 
+## Desktop app (beta)
+
+<p>
+  <img src="docs/assets/desktop-setup.png" width="49%" alt="iOxide desktop setup: choosing a calendar app">
+  <img src="docs/assets/desktop-dashboard.png" width="49%" alt="iOxide desktop dashboard showing a connected account">
+</p>
+
+If you would rather not use a terminal, the desktop app does the same job with
+a window and a tray icon. It runs on Windows, macOS and Linux.
+
+- **Guided setup.** Sign in to Proton (including the verification puzzle, an
+  authenticator code or a separate mailbox password when your account needs
+  them), choose where your calendar app runs, then pick the app for
+  step-by-step instructions.
+- **Phones and other devices.** Detects Tailscale and helps you set up a
+  private HTTPS address, or tests an HTTPS address you already have.
+- **Connection details on hand.** Copy the server address, username and bridge
+  password. The bridge password is kept in Windows Credential Manager, macOS
+  Keychain or the Linux Secret Service, not in a file.
+- **Runs in the background.** Closing the window keeps the bridge running in
+  the tray. Start at login is optional.
+- **Real status.** Shows how many calendars are loaded, the last successful
+  sync and when your calendar app last connected.
+
+Download the newest `iOxide Desktop 1.0.0-beta.…` build from the
+[releases page](https://github.com/mrk1987/iOxide/releases). The builds are not
+code-signed yet; the [desktop guide](docs/desktop.md) explains the one-time
+confirmation on each system. Accounts you already added with the CLI show up
+in the app and unlock with their bridge password. Don't run the CLI server and
+the desktop app at the same time; both use port 8081.
+
 ## Install
 
-The current release is the **CLI** (`ioxide`). A separate **desktop app**
-(`ioxide-desktop`, or `iOxide.app` on macOS) adds guided setup and tray controls.
-It is in beta: test builds are published as pre-releases named
-`iOxide Desktop 1.0.0-beta.…` on the
-[releases page](https://github.com/mrk1987/iOxide/releases). See the
-[desktop guide](docs/desktop.md) for installation and preview instructions.
+The sections below cover the **CLI** (`ioxide`), for servers, containers and
+headless use.
 
 Download and extract the archive for your system from the
 [latest release](https://github.com/mrk1987/iOxide/releases/latest):
