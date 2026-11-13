@@ -53,8 +53,8 @@ func cmdAuth(opts *options, username string) error {
 }
 
 // login performs the SRP login. If Proton gates it behind a human
-// verification challenge, the user completes the challenge in a browser and
-// the login is retried once with the resulting token.
+// verification challenge, the user completes the challenge on Proton's
+// verification page and the login is retried with the challenge token.
 //
 // Passing a real client version with -app-version avoids the challenge in
 // most cases; this is the fallback for when that stops working.
@@ -66,23 +66,30 @@ func login(c *protonmail.Client, username, password string) (*protonmail.Auth, e
 		}
 		return c.Auth(username, password, info)
 	}
+	defer c.ClearHumanVerification()
 
 	a, err := attempt()
-	var apiErr *protonmail.APIError
-	if errors.As(err, &apiErr) && apiErr.Code == protonmail.CodeHumanVerificationRequired && apiErr.HV != nil {
-		token, tokenType, err := solveHumanVerification(apiErr.HV)
-		if err != nil {
-			return nil, err
+	for round := 0; ; round++ {
+		var apiErr *protonmail.APIError
+		if !errors.As(err, &apiErr) || apiErr.Code != protonmail.CodeHumanVerificationRequired || apiErr.HV == nil {
+			return a, err
 		}
-		c.SetHumanVerification(token, tokenType)
-		defer c.ClearHumanVerification()
+		if round == maxVerificationRounds {
+			return nil, errors.New("human verification was not accepted by Proton; try again later or use import-session")
+		}
+		if round > 0 {
+			fmt.Println("Proton has not confirmed the verification yet.")
+		}
+		page, pageErr := verificationURL(apiErr.HV)
+		if pageErr != nil {
+			return nil, pageErr
+		}
+		if waitErr := waitForVerification(page); waitErr != nil {
+			return nil, waitErr
+		}
+		c.SetHumanVerification(apiErr.HV.HumanVerificationToken, strings.Join(apiErr.HV.HumanVerificationMethods, ","))
 		a, err = attempt()
-		if err != nil {
-			return nil, err
-		}
-		return a, nil
 	}
-	return a, err
 }
 
 // cmdImportSession stores a session copied from a logged-in Proton web tab

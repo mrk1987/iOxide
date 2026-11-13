@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-13
+
 ### Added
 
 - Separate desktop application with iOxide branding, guided account setup,
@@ -23,6 +25,9 @@ All notable changes to this project are documented here. The format follows
   challenge (`desktop-v1.0.0-beta.2`). Proton's challenge page cannot report
   back to a local helper page, so the app now opens `verify.proton.me` and
   retries sign-in when you confirm the challenge is done.
+- `ioxide auth` completes human verification the same way: it opens
+  `verify.proton.me`, waits for you to press Enter and retries the login. The
+  old helper page only worked through a manual DevTools workaround.
 
 ### Changed
 

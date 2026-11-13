@@ -140,8 +140,9 @@ Flags go before the command: `ioxide -listen :8081 serve`.
 ### Login is blocked by a CAPTCHA
 
 Proton sometimes gates logins from unknown clients behind a human
-verification challenge. When that happens `ioxide auth` opens the challenge in
-your browser; solve it there and the login continues.
+verification challenge. When that happens `ioxide auth` opens Proton's
+verification page in your browser. Complete the challenge there, then press
+Enter in the terminal and the login continues.
 
 Reporting a real client version usually avoids the challenge altogether:
 

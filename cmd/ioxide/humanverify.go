@@ -3,72 +3,46 @@ package main
 import (
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
+	"net/url"
 	"os/exec"
 	"runtime"
-	"slices"
 	"strings"
-	"time"
 
 	"github.com/mrk1987/ioxide/internal/protonmail"
 )
 
-const humanVerificationTimeout = 5 * time.Minute
+// maxVerificationRounds limits how often the user is sent back to the
+// challenge when Proton keeps asking.
+const maxVerificationRounds = 3
 
-// solveHumanVerification opens Proton's official challenge in the browser for
-// the account owner to complete by hand, then returns the token the challenge
-// produces. It never solves or bypasses the challenge itself.
-func solveHumanVerification(hv *protonmail.HumanVerificationDetails) (token, tokenType string, err error) {
-	if !slices.Contains(hv.HumanVerificationMethods, "captcha") {
-		return "", "", fmt.Errorf("no supported verification method offered (got %v)", hv.HumanVerificationMethods)
+// verificationURL is Proton's own verification page for a challenge. Proton's
+// embeddable challenge reports its result only to a parent frame on
+// verify.proton.me, so a local helper page cannot receive it. Instead the
+// account owner completes the challenge there, and the login is retried with
+// the same challenge token, as Proton Mail Bridge does.
+func verificationURL(hv *protonmail.HumanVerificationDetails) (string, error) {
+	if hv == nil || hv.HumanVerificationToken == "" || len(hv.HumanVerificationMethods) == 0 {
+		return "", errors.New("unsupported human verification method requested by Proton")
 	}
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", "", err
-	}
-	defer ln.Close()
-
-	tokens := make(chan string, 1)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, strings.Replace(helperPage, "{{TOKEN}}", hv.HumanVerificationToken, 1))
-	})
-	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
-		t := r.FormValue("token")
-		if t == "" {
-			http.Error(w, "missing token", http.StatusBadRequest)
-			return
-		}
-		select {
-		case tokens <- t:
-		default:
-		}
-		fmt.Fprint(w, "Token received. You can close this tab and return to the terminal.")
-	})
-
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	go srv.Serve(ln)
-	defer srv.Close()
-
-	url := "http://" + ln.Addr().String() + "/"
-	fmt.Println()
-	fmt.Println("Proton requires you to complete a human-verification challenge.")
-	fmt.Println("Opening it in your browser:", url)
-	fmt.Println("If it does not open automatically, paste that URL into your browser.")
-	openBrowser(url)
-
-	select {
-	case t := <-tokens:
-		return t, "captcha", nil
-	case <-time.After(humanVerificationTimeout):
-		return "", "", errors.New("timed out waiting for human verification")
-	}
+	query := url.Values{}
+	query.Set("methods", strings.Join(hv.HumanVerificationMethods, ","))
+	query.Set("token", hv.HumanVerificationToken)
+	return "https://verify.proton.me/?" + query.Encode(), nil
 }
 
-func openBrowser(url string) {
+// waitForVerification opens the verification page and blocks until the user
+// confirms they have completed it. It is a variable so tests can replace it.
+var waitForVerification = func(pageURL string) error {
+	fmt.Println()
+	fmt.Println("Proton requires you to complete a human-verification challenge.")
+	fmt.Println("Opening it in your browser:", pageURL)
+	fmt.Println("If it does not open automatically, paste that URL into your browser.")
+	openBrowser(pageURL)
+	_, err := askLine("Press Enter after you have completed the challenge: ")
+	return err
+}
+
+func openBrowser(target string) {
 	var cmd string
 	var args []string
 	switch runtime.GOOS {
@@ -79,38 +53,5 @@ func openBrowser(url string) {
 	default:
 		cmd = "xdg-open"
 	}
-	_ = exec.Command(cmd, append(args, url)...).Start()
+	_ = exec.Command(cmd, append(args, target)...).Start()
 }
-
-const helperPage = `<!doctype html>
-<html><head><meta charset="utf-8"><title>Proton verification</title>
-<style>body{font-family:sans-serif;max-width:560px;margin:2rem auto;padding:0 1rem}
-button{padding:.6rem 1rem;font-size:1rem;margin:.3rem 0}
-pre{background:#f4f4f4;padding:.5rem;overflow:auto;max-height:160px;font-size:11px}
-input{width:100%;padding:.5rem}code{background:#eee;padding:2px 4px;font-size:12px}</style>
-</head><body>
-<h3>Complete the Proton challenge</h3>
-<ol>
-<li>Click <b>Open challenge</b>. It opens Proton's challenge in a popup.</li>
-<li>Solve the CAPTCHA in that popup.</li>
-<li>If this page does not advance on its own, use the console method below.</li>
-</ol>
-<button onclick="openHV()">Open challenge</button>
-<h4>Console method</h4>
-<p>In the popup, open DevTools, go to Console and paste this <i>before</i> solving:
-<br><code>window.addEventListener('message',e=>console.log('HV',JSON.stringify(e.data)))</code>
-<br>Solve the CAPTCHA, then copy the token value that is logged and paste it here:</p>
-<form onsubmit="send(document.getElementById('t').value);return false">
-<input id="t" placeholder="verification token"><button>Submit token</button></form>
-<h4>Messages this page received</h4><pre id="log"></pre>
-<script>
-var HVURL="https://verify-api.proton.me/core/v4/captcha?Token={{TOKEN}}&ForceWebMessaging=1&Dark=true";
-function openHV(){window.open(HVURL,'hv','width=440,height=660')}
-function send(tok){if(!tok)return;fetch('/token?token='+encodeURIComponent(tok)).then(function(){document.body.innerHTML='<h3>Token submitted. Return to the terminal.</h3>'})}
-function log(x){var p=document.getElementById('log');p.textContent+=(typeof x==='string'?x:JSON.stringify(x))+'\n'}
-window.addEventListener('message',function(e){
-  log(e.data);
-  try{var d=e.data;var tok=d&&(d.token||(d.payload&&d.payload.token)||(d.data&&d.data.token));if(tok){send(tok)}}catch(err){log(String(err))}
-});
-</script>
-</body></html>`
