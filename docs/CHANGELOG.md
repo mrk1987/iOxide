@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Build with Go 1.27.4. Go 1.26.0 carried standard-library vulnerabilities that
+  `govulncheck` flagged in CI.
+- Rewrote the README for 1.0 and corrected the sync description: changes are
+  followed every minute and the calendar list is re-read every 15 minutes.
+
 ## [1.0.1] - 2026-11-13
 
 ### Added
