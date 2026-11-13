@@ -108,6 +108,10 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Release title
+        id: version
+        # desktop-v1.0.0-beta.2 is published as "iOxide Desktop 1.0.0-beta.2".
+        run: echo "version=${GITHUB_REF_NAME#desktop-v}" >> "$GITHUB_OUTPUT"
       - name: Verify archives and write checksums
         run: |
           shopt -s nullglob
@@ -130,4 +134,4 @@ jobs:
           files: dist/*
           prerelease: true
           make_latest: false
-          name: iOxide Desktop ${{ github.ref_name }}
+          name: iOxide Desktop ${{ steps.version.outputs.version }}

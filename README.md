@@ -46,7 +46,7 @@ break it at any time.
 The current release is the **CLI** (`ioxide`). A separate **desktop app**
 (`ioxide-desktop`, or `iOxide.app` on macOS) adds guided setup and tray controls.
 It is in beta: test builds are published as pre-releases named
-`iOxide Desktop desktop-v…` on the
+`iOxide Desktop 1.0.0-beta.…` on the
 [releases page](https://github.com/mrk1987/iOxide/releases). See the
 [desktop guide](docs/desktop.md) for installation and preview instructions.
 
