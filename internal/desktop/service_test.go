@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net"
-	"net/http"
 	"runtime"
 	"strings"
 	"sync"
@@ -14,7 +12,6 @@ import (
 	"time"
 
 	"github.com/mrk1987/ioxide/internal/auth"
-	"github.com/mrk1987/ioxide/internal/protonmail"
 )
 
 type memoryVault struct {
@@ -124,7 +121,10 @@ func TestSignInStagesAreEnforcedByBackend(t *testing.T) {
 		t.Fatal("accepted mailbox password without pending login")
 	}
 	if _, err := s.VerificationURL(); err == nil {
-		t.Fatal("created helper without pending challenge")
+		t.Fatal("returned a verification page without pending challenge")
+	}
+	if _, err := s.ContinueVerification(); err == nil {
+		t.Fatal("continued verification without pending challenge")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -194,35 +194,5 @@ func TestRemovalKeychainFailureKeepsAccountAndRestartsBridge(t *testing.T) {
 	}
 	if len(s.State().Accounts) != 1 {
 		t.Fatal("failed removal hid the account, preventing retry")
-	}
-}
-
-func TestVerificationHelperRejectsCrossOriginSubmission(t *testing.T) {
-	s, _ := testService(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	s.pending = &pendingLogin{ctx: ctx, cancel: cancel, stage: "verification", challenge: &protonmail.HumanVerificationDetails{HumanVerificationMethods: []string{"captcha"}, HumanVerificationToken: "dummy"}}
-	url, err := s.VerificationURL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	response, err := http.Get(url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, _ := io.ReadAll(response.Body)
-	response.Body.Close()
-	if response.Header.Get("Cache-Control") != "no-store" || !strings.Contains(string(body), "event.origin!=='https://verify-api.proton.me'") {
-		t.Fatal("missing helper protections")
-	}
-	request, _ := http.NewRequest(http.MethodPost, url+"/token", strings.NewReader(`{"token":"dummy"}`))
-	request.Header.Set("Origin", "https://untrusted.example")
-	response, err = http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
-	if response.StatusCode != http.StatusForbidden {
-		t.Fatalf("cross-origin submission status: %d", response.StatusCode)
 	}
 }

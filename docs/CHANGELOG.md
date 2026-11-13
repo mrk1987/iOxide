@@ -17,6 +17,13 @@ All notable changes to this project are documented here. The format follows
 - Desktop test builds are published as pre-releases from `desktop-v*` tags,
   starting with `desktop-v1.0.0-beta.1`. They do not replace the CLI release.
 
+### Fixed
+
+- Desktop sign-in no longer waits forever after the human-verification
+  challenge (`desktop-v1.0.0-beta.2`). Proton's challenge page cannot report
+  back to a local helper page, so the app now opens `verify.proton.me` and
+  retries sign-in when you confirm the challenge is done.
+
 ### Changed
 
 - Shared the authenticated CalDAV handler between CLI and desktop; tied background

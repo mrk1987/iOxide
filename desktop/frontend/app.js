@@ -39,7 +39,7 @@ async function call(method, ...args) {
     case 'State': return structuredClone(state);
     // Like the native backend, these return a new snapshot and leave the current one untouched, so update() sees the change.
     case 'BeginLogin': return { ...structuredClone(state), pendingUsername: sample.username, stage: 'two-factor' };
-    case 'CompleteTOTP': case 'CompleteMailboxPassword': return { ...structuredClone(state), accounts: [...structuredClone(state.accounts), { ...sample }], pendingUsername: '', stage: 'account' };
+    case 'CompleteTOTP': case 'CompleteMailboxPassword': case 'ContinueVerification': return { ...structuredClone(state), accounts: [...structuredClone(state.accounts), { ...sample }], pendingUsername: '', stage: 'account' };
     case 'CancelLogin': state.stage = 'account'; return;
     case 'Start': state.running = true; return;
     case 'Stop': state.running = false; return;
@@ -70,7 +70,7 @@ function update(next) {
     selectedUser = state.accounts.find(entry => !entry.locked)?.username || state.accounts[0]?.username || '';
     view = 'devices';
   } else if (authViews.includes(view) && oldStage !== 'account' && state.stage === 'account') {
-    view = 'sign-in'; error = state.error || 'The sign-in session ended. Please sign in again.'; seenError = state.error;
+    view = 'sign-in'; error = state.error || error || 'The sign-in session ended. Please sign in again.'; seenError = state.error;
   }
   if (!selectedUser && state.accounts.length) selectedUser = state.accounts[0].username;
 }
@@ -105,7 +105,7 @@ function signIn() {
 }
 
 function verification() {
-  return `${heading('Verify your sign-in', 'Your account requires a human-verification challenge. Complete it in your browser, then return here.')}<div class="notice"><div class="inline-actions"><span class="spinner" aria-hidden="true"></span><span>Waiting for verification</span></div></div><div class="actions">${button('Open verification in browser', 'verify', 'primary')}${button('Cancel sign-in', 'cancel-login', 'ghost')}</div><p class="hint">The challenge may open in a second browser window. This sign-in session expires after five minutes.</p>`;
+  return `${heading('Verify your sign-in', 'Proton wants to confirm that a person is signing in.')}<ol class="guide"><li>Open Proton's verification page and complete the challenge.</li><li>When the challenge is done, return here and continue.</li></ol><div class="actions">${button('Open verification in browser', 'verify', 'primary')}</div><div class="actions"><button class="button secondary" type="button" data-action="verify-continue" ${busy ? 'disabled' : ''}>${busyText('I have completed verification')}</button>${button('Cancel sign-in', 'cancel-login', 'ghost')}</div><p class="hint">This sign-in session expires after five minutes.</p>`;
 }
 
 function codeForm(mailbox = false) {
@@ -228,6 +228,7 @@ root.addEventListener('click', event => {
     case 'local': perform(async () => { remote = false; connectionURL = ''; await call('SaveConnectionURL', ''); }, 'clients'); break;
     case 'remote': remote = true; navigate('access'); break;
     case 'verify': perform(() => call('OpenVerification')); break;
+    case 'verify-continue': perform(async () => update(await call('ContinueVerification'))); break;
     case 'cancel-login': perform(async () => { await call('CancelLogin'); state = await call('State'); }, 'sign-in'); break;
     case 'start': perform(async () => { await call('Start'); update(await call('State')); }); break;
     case 'stop': perform(async () => { await call('Stop'); update(await call('State')); }); break;

@@ -48,7 +48,6 @@ type pendingLogin struct {
 	auth               *protonmail.Auth
 	stage              string
 	challenge          *protonmail.HumanVerificationDetails
-	verifyURL          string
 }
 
 // Service serialises mutations; snapshots never include a password or token.

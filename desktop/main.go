@@ -66,6 +66,10 @@ func (d *Desktop) OpenVerification() error {
 	return d.app.Browser.OpenURL(url)
 }
 
+func (d *Desktop) ContinueVerification() (bridgeui.State, error) {
+	return d.core.ContinueVerification()
+}
+
 func (d *Desktop) CopyPassword(user string) error {
 	password, err := d.core.RevealPassword(user)
 	if err != nil {
