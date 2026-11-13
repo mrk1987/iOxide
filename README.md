@@ -92,7 +92,7 @@ in a directory on your `PATH`, or run it from the extracted folder using
 `./ioxide` on Linux/macOS or `.\ioxide.exe` in PowerShell. Go is not needed
 to run a downloaded binary. `SHA256SUMS` contains checksums for all archives.
 
-To build it yourself, use Go 1.26.11 or newer:
+To build it yourself, use Go 1.27.4 or newer:
 
 ```sh
 go install github.com/mrk1987/ioxide/cmd/ioxide@latest

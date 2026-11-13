@@ -72,7 +72,7 @@ calendars in Proton. It does not revoke other Proton sessions.
 The desktop is a separate Go module under `desktop/`; the root module and CLI do
 not depend on Wails or the desktop credential-store library.
 
-On Windows, with Go 1.26.11 or newer and WebView2 installed:
+On Windows, with Go 1.27.4 or newer and WebView2 installed:
 
 ```powershell
 .\desktop\build.ps1
