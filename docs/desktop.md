@@ -7,8 +7,25 @@ iOxide has two separate executables:
 | `ioxide` / `ioxide.exe` | Command-line bridge for servers, containers and headless use. |
 | `ioxide-desktop` / `ioxide-desktop.exe` | Desktop bridge with account setup, a native window and a tray menu. On macOS it is packaged as `iOxide.app`. |
 
-The desktop app is in development. The `v1.0.0` release remains the CLI release;
-desktop CI builds are separate artifacts, not a replacement for that release.
+The desktop app is in beta. The `v1.0.0` release remains the CLI release;
+desktop test builds are separate pre-releases tagged `desktop-v…`.
+
+## Install a beta build
+
+Download the archive for your system from the
+[releases page](https://github.com/mrk1987/iOxide/releases) and extract it.
+The builds are not code-signed, so each system asks for confirmation once:
+
+- **Windows:** run `ioxide-desktop.exe`. If SmartScreen appears, choose
+  *More info*, then *Run anyway*. WebView2 is required (included in Windows 11).
+- **macOS:** move `iOxide.app` to Applications, then run
+  `xattr -dr com.apple.quarantine /Applications/iOxide.app` once before opening it.
+- **Linux:** install GTK 4 and WebKitGTK 6 (Ubuntu 24.04:
+  `sudo apt install libgtk-4-1 libwebkitgtk-6.0-4`), then run `./ioxide-desktop`.
+  A Secret Service keyring and a tray are needed.
+
+Report problems at https://github.com/mrk1987/iOxide/issues. Do not include
+passwords, bridge passwords or verification tokens in a report.
 
 ## Setup
 

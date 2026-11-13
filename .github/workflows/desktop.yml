@@ -3,6 +3,7 @@ name: Desktop CI
 on:
   push:
     branches: [main, feature/desktop-ui]
+    tags: ["desktop-v*"]
     paths: ["desktop/**", "internal/**", "go.mod", "go.sum", ".github/workflows/desktop.yml"]
   pull_request:
     paths: ["desktop/**", "internal/**", "go.mod", "go.sum", ".github/workflows/desktop.yml"]
@@ -72,9 +73,61 @@ jobs:
             go build -trimpath -tags production -ldflags '-s -w' -o "../dist/${name}/ioxide-desktop" .
           fi
           cp ../LICENSE ../docs/desktop.md "../dist/${name}/"
+          # Archive here so executable bits and the .app bundle survive the
+          # artifact upload. A desktop-v1.2.3 tag names the archive v1.2.3.
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            version="${GITHUB_REF_NAME#desktop-}"
+          else
+            version="check-${GITHUB_SHA:0:7}"
+          fi
+          archive="ioxide-desktop-${version}-${{ matrix.platform }}-${GOARCH}"
+          cd ../dist
+          mv "${name}" "${archive}"
+          if [ "$GOOS" = "windows" ]; then
+            7z a -tzip "${archive}.zip" "${archive}"
+          else
+            tar czf "${archive}.tar.gz" "${archive}"
+          fi
+          rm -r "${archive}"
       - uses: actions/upload-artifact@v7
         with:
           name: ioxide-desktop-${{ matrix.platform }}-${{ matrix.arch }}
-          path: dist/ioxide-desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: Publish desktop pre-release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: desktop
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Verify archives and write checksums
+        run: |
+          shopt -s nullglob
+          cd dist
+          archives=(*.tar.gz *.zip)
+          if [ "${#archives[@]}" -ne 6 ]; then
+            echo "Expected six desktop archives, found ${#archives[@]}"
+            exit 1
+          fi
+          for archive in "${archives[@]}"; do
+            case "$archive" in
+              *macos*.tar.gz) tar -tzf "$archive" | grep -F "/iOxide.app/Contents/MacOS/ioxide-desktop" ;;
+              *.tar.gz) tar -tzf "$archive" | grep -Fx "$(basename "$archive" .tar.gz)/ioxide-desktop" ;;
+              *.zip) unzip -tqq "$archive" && unzip -Z1 "$archive" | grep -Fx "$(basename "$archive" .zip)/ioxide-desktop.exe" ;;
+            esac
+          done
+          sha256sum * > SHA256SUMS
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          prerelease: true
+          make_latest: false
+          name: iOxide Desktop ${{ github.ref_name }}

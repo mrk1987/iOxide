@@ -14,6 +14,8 @@ All notable changes to this project are documented here. The format follows
 - Native tray menu, OS credential-store integration, optional start at login,
   masked connection credentials and measured calendar/client status.
 - Desktop CI builds for Windows, macOS and Linux on amd64 and ARM64.
+- Desktop test builds are published as pre-releases from `desktop-v*` tags,
+  starting with `desktop-v1.0.0-beta.1`. They do not replace the CLI release.
 
 ### Changed
 
