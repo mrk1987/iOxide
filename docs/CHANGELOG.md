@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-20
+
+Desktop pre-release: 1.0.0-beta.3.
+
 ### Added
 
 - Desktop: a "Start minimized to tray" setting. When iOxide starts at login it
@@ -31,7 +35,6 @@ All notable changes to this project are documented here. The format follows
   account is set up. A choice made in Settings is never overridden.
 - Desktop module: `go.mod` now also targets Go 1.27.4 (`go mod tidy -diff` in
   desktop CI failed after the toolchain move).
-
 - Build with Go 1.27.4. Go 1.26.0 carried standard-library vulnerabilities that
   `govulncheck` flagged in CI.
 - Rewrote the README for 1.0 and corrected the sync description: changes are
