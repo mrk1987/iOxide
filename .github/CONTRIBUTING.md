@@ -19,6 +19,10 @@ Security issues go through [SECURITY.md](SECURITY.md), not the issue tracker.
 
 ## Making changes
 
+`main` is protected: every change, the maintainer's included, goes through a
+pull request and needs the CI tests (Linux, macOS, Windows) and lint to pass
+before it can be merged.
+
 1. Fork and branch from `main`.
 2. Keep the change focused. One fix or feature per pull request.
 3. Add or update tests where the code can be tested without a Proton account.
