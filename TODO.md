@@ -20,3 +20,13 @@
   request bodies kept without Content-Length, dialogs before Run no longer
   hang. After merging, smoke-test the tray, start minimized and sign-in, then
   ship it in the next desktop beta.
+
+- [ ] **Close CodeQL alert #8 (`js/unvalidated-dynamic-method-call`)** (added
+  2026-11-20, not critical). `desktop/frontend/app.js:214` calls
+  `(screens[view] || welcome)()`, and in preview mode `view` comes from the URL
+  (`?preview=1&screen=...`). `screen=hasOwnProperty` or `constructor` reaches an
+  `Object.prototype` method, so the preview page throws or renders
+  `[object Object]`. Only built-in methods are reachable and only on the
+  local preview page, so there is no code execution. Fix: look up with
+  `Object.hasOwn(screens, view)` (or make `screens` a `Map`) and fall back to
+  `welcome`.
