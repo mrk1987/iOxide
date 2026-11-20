@@ -27,6 +27,42 @@ jobs:
       - run: go test -count=1 ./...
         if: runner.os == 'Windows'
 
+  dco:
+    name: DCO
+    # Every commit in a pull request must be signed off by its author
+    # (Developer Certificate of Origin, see CONTRIBUTING.md). On pushes to
+    # main the job is skipped: main only changes through pull requests.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check sign-off
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          if [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
+            echo "Dependabot pull request: exempt from sign-off."; exit 0
+          fi
+          missing=0
+          for c in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            email=$(git log -1 --format=%ae "$c")
+            if ! git log -1 --format=%B "$c" | grep -qiF "Signed-off-by:" ||
+               ! git log -1 --format=%B "$c" | grep -i "^Signed-off-by:" | grep -qiF "<$email>"; then
+              echo "::error::Commit $(git log -1 --format='%h %s' "$c") has no Signed-off-by for <$email>."
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Sign off with 'git commit -s', or 'git rebase --signoff main' for existing commits."
+            exit 1
+          fi
+          echo "All commits are signed off."
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

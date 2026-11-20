@@ -217,10 +217,11 @@ skipped with a message naming the event.
 
 ## Security notes
 
-- `auth.json` holds your Proton login password, mailbox password and refresh
-  token, encrypted with NaCl secretbox under the bridge password. Anyone with
-  the file and the bridge password has full access to your account. The file
-  is created with mode `0600`.
+- `auth.json` holds your Proton session (access and refresh tokens) and the
+  derived passphrases that unlock your keys, encrypted with NaCl secretbox
+  under the bridge password. It holds no Proton password. Anyone with the file
+  and the bridge password can use your session until it is ended (sign out of
+  all sessions in Proton). The file is created with mode `0600`.
 - The bridge password is a 256-bit random key. It is only ever compared
   locally and never sent to Proton.
 - The server has no rate limiting or lockout. Do not expose it to the internet
@@ -232,7 +233,9 @@ skipped with a message naming the event.
   and written with mode `0600`. Without the bridge password it cannot be
   read, and a damaged or tampered file is discarded and rebuilt.
 
-See the [security policy](.github/SECURITY.md) for how to report a vulnerability.
+See the [security policy](.github/SECURITY.md) for how to report a vulnerability,
+and the [security assessment](docs/SECURITY-ASSESSMENT.md) for the main risks and
+how they are handled.
 
 ## Development
 
@@ -256,7 +259,9 @@ docs/            Changelog and artwork
 .github/         CI, release workflow and contribution policies
 ```
 
-See the [changelog](docs/CHANGELOG.md) for release history.
+See the [architecture](docs/ARCHITECTURE.md) for how the pieces fit together,
+[governance](.github/GOVERNANCE.md) for roles and access, and the
+[changelog](docs/CHANGELOG.md) for release history.
 
 ## Acknowledgements
 
