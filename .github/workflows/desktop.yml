@@ -3,11 +3,13 @@ name: Desktop CI
 on:
   push:
     branches: [main, feature/desktop-ui]
-    tags: ["desktop-v*"]
     paths: ["desktop/**", "internal/**", "go.mod", "go.sum", ".github/workflows/desktop.yml"]
   pull_request:
     paths: ["desktop/**", "internal/**", "go.mod", "go.sum", ".github/workflows/desktop.yml"]
   workflow_dispatch:
+  # release.yml builds the desktop archives through this workflow and
+  # publishes them in the same release as the CLI.
+  workflow_call:
 
 permissions:
   contents: read
@@ -74,9 +76,9 @@ jobs:
           fi
           cp ../LICENSE ../docs/desktop.md "../dist/${name}/"
           # Archive here so executable bits and the .app bundle survive the
-          # artifact upload. A desktop-v1.2.3 tag names the archive v1.2.3.
+          # artifact upload. A v1.2.3 tag names the archive v1.2.3.
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            version="${GITHUB_REF_NAME#desktop-}"
+            version="$GITHUB_REF_NAME"
           else
             version="check-${GITHUB_SHA:0:7}"
           fi
@@ -95,59 +97,3 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 14
-
-  release:
-    name: Publish desktop release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/desktop-v')
-    needs: desktop
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      # Signed build provenance: `gh attestation verify <file> -R mrk1987/iOxide`.
-      id-token: write
-      attestations: write
-      artifact-metadata: write
-    steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          path: dist
-          merge-multiple: true
-      - name: Release title
-        id: version
-        # desktop-v1.0.0-beta.2 is published as "iOxide Desktop 1.0.0-beta.2".
-        run: echo "version=${GITHUB_REF_NAME#desktop-v}" >> "$GITHUB_OUTPUT"
-      - name: Verify archives and write checksums
-        run: |
-          shopt -s nullglob
-          cd dist
-          archives=(*.tar.gz *.zip)
-          if [ "${#archives[@]}" -ne 6 ]; then
-            echo "Expected six desktop archives, found ${#archives[@]}"
-            exit 1
-          fi
-          for archive in "${archives[@]}"; do
-            case "$archive" in
-              *macos*.tar.gz) tar -tzf "$archive" | grep -F "/iOxide.app/Contents/MacOS/ioxide-desktop" ;;
-              *.tar.gz) tar -tzf "$archive" | grep -Fx "$(basename "$archive" .tar.gz)/ioxide-desktop" ;;
-              *.zip) unzip -tqq "$archive" && unzip -Z1 "$archive" | grep -Fx "$(basename "$archive" .zip)/ioxide-desktop.exe" ;;
-            esac
-          done
-          sha256sum * > SHA256SUMS
-      - name: Attest build provenance
-        id: attest
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-checksums: dist/SHA256SUMS
-      # The bundle as a release file, so it can be verified offline
-      # (gh attestation verify --bundle) and is found by OpenSSF Scorecard.
-      - name: Attach provenance bundle
-        env:
-          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
-        run: cp "$BUNDLE" dist/provenance.intoto.jsonl
-      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
-        with:
-          files: dist/*
-          # A tag with a suffix (desktop-v1.3.0-beta.1) is a pre-release.
-          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
-          make_latest: false
-          name: iOxide Desktop ${{ steps.version.outputs.version }}
