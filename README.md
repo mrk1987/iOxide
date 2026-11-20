@@ -61,7 +61,8 @@ a window and a tray icon. It runs on Windows, macOS and Linux.
   password. The bridge password is kept in Windows Credential Manager, macOS
   Keychain or the Linux Secret Service, not in a file.
 - **Runs in the background.** Closing the window keeps the bridge running in
-  the tray. Start at login is optional.
+  the tray. Once an account is set up, iOxide starts at login, minimized to the
+  tray. Both can be turned off in Settings.
 - **Real status.** Shows how many calendars are loaded, the last successful
   sync and when your calendar app last connected.
 

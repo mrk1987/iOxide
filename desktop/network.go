@@ -95,27 +95,9 @@ func validateConnectionURL(raw string) (string, error) {
 	return u.String(), nil
 }
 
-func preferencesPath() (string, error) {
-	root, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, "ioxide", "desktop.json"), nil
-}
-
 func (d *Desktop) ConnectionURL() string {
-	path, err := preferencesPath()
+	prefs, err := loadPreferences()
 	if err != nil {
-		return ""
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	var prefs struct {
-		URL string `json:"url"`
-	}
-	if json.Unmarshal(data, &prefs) != nil {
 		return ""
 	}
 	value, _ := validateConnectionURL(prefs.URL)
@@ -131,33 +113,7 @@ func (d *Desktop) SaveConnectionURL(raw string) error {
 			return err
 		}
 	}
-	path, err := preferencesPath()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	data, _ := json.Marshal(struct {
-		URL string `json:"url"`
-	}{value})
-	f, err := os.CreateTemp(filepath.Dir(path), ".desktop-*.json")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
+	return updatePreferences(func(prefs *preferences) { prefs.URL = value })
 }
 
 // CheckConnection probes TLS and unauthenticated CalDAV readiness only. It never

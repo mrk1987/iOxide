@@ -1,6 +1,6 @@
 module github.com/mrk1987/ioxide/desktop
 
-go 1.26.11
+go 1.27.4
 
 require (
 	github.com/mrk1987/ioxide v0.0.0

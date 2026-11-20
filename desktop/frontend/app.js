@@ -12,7 +12,7 @@ let state = { running: true, address: 'http://127.0.0.1:8081/caldav/', accounts:
 let view = preview ? params.get('screen') || 'welcome' : 'welcome';
 let selectedUser = '', client = 'apple', remote = false, connectionURL = '', network = null;
 let busy = false, error = '', message = '', revealed = '', revealTimer;
-let removeConfirmation = false, autoStart = false, booted = false;
+let removeConfirmation = false, autoStart = false, startMinimized = false, booted = false;
 let seenError = '', toastFor = '', toastTimer;
 const authViews = ['sign-in', 'verification', 'two-factor', 'mailbox-password'];
 const stageViews = { verification: 'verification', 'two-factor': 'two-factor', 'mailbox-password': 'mailbox-password' };
@@ -51,6 +51,8 @@ async function call(method, ...args) {
     case 'SaveConnectionURL': connectionURL = args[0]; return;
     case 'AutostartEnabled': return autoStart;
     case 'SetAutostart': autoStart = args[0]; return;
+    case 'StartMinimized': return startMinimized;
+    case 'SetStartMinimized': startMinimized = args[0]; return;
     case 'TailscaleStatus': return { installed: true, running: true, httpsReady: false, url: 'https://calendar.example.ts.net/caldav/', message: 'Preview: HTTPS forwarding has not been configured.' };
     case 'CheckConnection': message = 'Preview: no network request was made.'; return;
     case 'OpenVerification': message = 'Preview: the challenge would open in your browser.'; return;
@@ -188,7 +190,7 @@ function removeControls() {
 }
 
 function settings() {
-  return `<header class="dashboard-header"><div>${heading('Settings', 'Control how iOxide runs and how your other devices connect.')}</div><span class="status-pill ${state.running ? 'good' : 'muted'}">${state.running ? 'Bridge running' : 'Bridge stopped'}</span></header><div class="settings-row"><div><h2 class="section-title">Start at login</h2><p>Keep iOxide available after you sign in to this computer.</p></div><label class="toggle"><input id="autostart" type="checkbox" ${autoStart ? 'checked' : ''} ${busy ? 'disabled' : ''}><span>Enabled</span></label></div><div class="settings-row"><div><h2 class="section-title">Background bridge</h2><p>Closing the window keeps iOxide in the tray. Quit from the tray to stop it.</p></div>${button(state.running ? 'Stop bridge' : 'Start bridge', state.running ? 'stop' : 'start')}</div><div class="detail-card"><h2 class="section-title">Other devices</h2><p>${escape(connectionURL || 'No HTTPS address configured. The bridge is available on this computer only.')}</p><div class="toolbar">${button('Configure secure access', 'access')}${connectionURL ? button('Use local connection', 'clear-url', 'ghost') : ''}</div></div><div class="settings-row"><p class="hint">Passwords are kept in your OS credential store. Proton sessions are encrypted locally.</p>${button('Help', 'help-help', 'ghost')}</div>`;
+  return `<header class="dashboard-header"><div>${heading('Settings', 'Control how iOxide runs and how your other devices connect.')}</div><span class="status-pill ${state.running ? 'good' : 'muted'}">${state.running ? 'Bridge running' : 'Bridge stopped'}</span></header><div class="settings-row"><div><h2 class="section-title">Start at login</h2><p>Keep iOxide available after you sign in to this computer.</p></div><label class="toggle"><input id="autostart" type="checkbox" ${autoStart ? 'checked' : ''} ${busy ? 'disabled' : ''}><span>Enabled</span></label></div><div class="settings-row"><div><h2 class="section-title">Start minimized to tray</h2><p>${autoStart ? 'When iOxide starts at login, keep the window closed. Open it from the tray icon.' : 'Applies when iOxide starts at login. Turn on Start at login to use it.'}</p></div><label class="toggle"><input id="start-minimized" type="checkbox" ${startMinimized ? 'checked' : ''} ${busy || !autoStart ? 'disabled' : ''}><span>Enabled</span></label></div><div class="settings-row"><div><h2 class="section-title">Background bridge</h2><p>Closing the window keeps iOxide in the tray. Quit from the tray to stop it.</p></div>${button(state.running ? 'Stop bridge' : 'Start bridge', state.running ? 'stop' : 'start')}</div><div class="detail-card"><h2 class="section-title">Other devices</h2><p>${escape(connectionURL || 'No HTTPS address configured. The bridge is available on this computer only.')}</p><div class="toolbar">${button('Configure secure access', 'access')}${connectionURL ? button('Use local connection', 'clear-url', 'ghost') : ''}</div></div><div class="settings-row"><p class="hint">Passwords are kept in your OS credential store. Proton sessions are encrypted locally.</p>${button('Help', 'help-help', 'ghost')}</div>`;
 }
 
 function dashboardShell(content) {
@@ -224,7 +226,7 @@ root.addEventListener('click', event => {
   if (routes.includes(action)) { if (action === 'sign-in') selectedUser = ''; navigate(action); return; }
   switch (action) {
     case 'check': perform(async () => update(await call('State')), 'check'); break;
-    case 'settings': perform(async () => { autoStart = await call('AutostartEnabled'); }, 'settings'); break;
+    case 'settings': perform(loadSettings, 'settings'); break;
     case 'local': perform(async () => { remote = false; connectionURL = ''; await call('SaveConnectionURL', ''); }, 'clients'); break;
     case 'remote': remote = true; navigate('access'); break;
     case 'verify': perform(() => call('OpenVerification')); break;
@@ -275,8 +277,16 @@ root.addEventListener('change', event => {
   if (event.target.id === 'autostart') {
     const enabled = event.target.checked;
     perform(async () => { await call('SetAutostart', enabled); autoStart = enabled; });
+  } else if (event.target.id === 'start-minimized') {
+    const enabled = event.target.checked;
+    perform(async () => { await call('SetStartMinimized', enabled); startMinimized = enabled; });
   }
 });
+
+async function loadSettings() {
+  autoStart = await call('AutostartEnabled');
+  startMinimized = await call('StartMinimized');
+}
 
 async function refresh(initial = false) {
   if (busy) return;
@@ -299,7 +309,7 @@ if (preview) render();
 else {
   runtime.Events.On('navigate', event => {
     const requested = event.data;
-    if (requested === 'settings') perform(async () => { autoStart = await call('AutostartEnabled'); }, 'settings');
+    if (requested === 'settings') perform(loadSettings, 'settings');
     else if (['dashboard', 'connection'].includes(requested)) navigate(state.accounts.length ? requested : 'welcome');
   });
   await refresh(true);

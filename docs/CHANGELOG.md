@@ -6,7 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Desktop: a "Start minimized to tray" setting. When iOxide starts at login it
+  stays in the tray, unless the bridge cannot start or an account needs its
+  bridge password.
+
 ### Changed
+
+- Desktop: start at login and start minimized switch on once, after the first
+  account is set up. A choice made in Settings is never overridden.
+- Desktop module: `go.mod` now also targets Go 1.27.4 (`go mod tidy -diff` in
+  desktop CI failed after the toolchain move).
 
 - Build with Go 1.27.4. Go 1.26.0 carried standard-library vulnerabilities that
   `govulncheck` flagged in CI.

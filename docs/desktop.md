@@ -45,7 +45,16 @@ CalDAV activity, without estimated progress percentages.
 Keep the bridge computer awake and connected. Closing the window leaves iOxide
 running in the tray. The tray menu provides account/status information, connection
 details, start/stop, settings, help and quit. Quit stops this desktop instance's
-bridge. Start at login is opt-in.
+bridge.
+
+Settings has two startup options: **Start at login** and **Start minimized to
+tray**. Both switch on by themselves once, when your first account is set up in
+the app; before that nothing is registered. After that iOxide never changes them
+again, and a choice you make in Settings (even before setup) is kept. Start
+minimized only affects launches made by the login entry: opening iOxide yourself
+always shows the window, and the window opens anyway when the bridge cannot
+start or an account needs its bridge password. Login entries made by an older
+build are updated on first start.
 
 ## Existing CLI accounts and credential storage
 

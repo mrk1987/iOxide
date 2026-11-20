@@ -7,6 +7,7 @@ import (
 	"flag"
 	"io/fs"
 	"log"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -44,17 +45,41 @@ type Desktop struct {
 
 func (d *Desktop) State() bridgeui.State { return d.core.State() }
 func (d *Desktop) BeginLogin(username, password string) (bridgeui.State, error) {
-	return d.core.BeginLogin(username, password)
+	return d.afterSetup(d.core.BeginLogin(username, password))
 }
-func (d *Desktop) CompleteTOTP(code string) (bridgeui.State, error) { return d.core.CompleteTOTP(code) }
+func (d *Desktop) CompleteTOTP(code string) (bridgeui.State, error) {
+	return d.afterSetup(d.core.CompleteTOTP(code))
+}
 func (d *Desktop) CompleteMailboxPassword(password string) (bridgeui.State, error) {
-	return d.core.CompleteMailboxPassword(password)
+	return d.afterSetup(d.core.CompleteMailboxPassword(password))
 }
 func (d *Desktop) CancelLogin() { d.core.CancelLogin() }
 func (d *Desktop) Start() error { return d.core.Start() }
 func (d *Desktop) Stop()        { d.core.Stop() }
 func (d *Desktop) UnlockAccount(user, password string) error {
-	return d.core.UnlockAccount(user, password)
+	if err := d.core.UnlockAccount(user, password); err != nil {
+		return err
+	}
+	d.afterSetup(d.core.State(), nil)
+	return nil
+}
+
+// afterSetup switches on start at login and start minimized once, when the
+// first account becomes usable. Failing to do so never fails the sign-in.
+func (d *Desktop) afterSetup(state bridgeui.State, err error) (bridgeui.State, error) {
+	if err != nil {
+		return state, err
+	}
+	enable, claimErr := claimStartupDefaults(state)
+	if claimErr != nil {
+		log.Printf("desktop: could not save startup defaults: %v", claimErr)
+	}
+	if enable {
+		if err := d.setAutostart(true); err != nil {
+			log.Printf("desktop: could not enable start at login: %v", err)
+		}
+	}
+	return state, nil
 }
 func (d *Desktop) RemoveAccount(user string) error            { return d.core.RemoveAccount(user) }
 func (d *Desktop) RevealPassword(user string) (string, error) { return d.core.RevealPassword(user) }
@@ -101,9 +126,19 @@ func (d *Desktop) CopyText(text string) error {
 	return nil
 }
 
+// SetAutostart is the user's own choice, so the one-time defaults no longer apply.
 func (d *Desktop) SetAutostart(enabled bool) error {
+	if err := updatePreferences(func(prefs *preferences) { prefs.StartupDefaultsApplied = true }); err != nil {
+		return err
+	}
+	return d.setAutostart(enabled)
+}
+
+func (d *Desktop) setAutostart(enabled bool) error {
 	if enabled {
-		return d.app.Autostart.Enable()
+		// The flag lets a login launch start in the tray. The macOS 13+
+		// login item (SMAppService) cannot pass arguments and ignores it.
+		return d.app.Autostart.EnableWithOptions(application.AutostartOptions{Arguments: []string{autostartFlag}})
 	}
 	return d.app.Autostart.Disable()
 }
@@ -111,6 +146,32 @@ func (d *Desktop) SetAutostart(enabled bool) error {
 func (d *Desktop) AutostartEnabled() (bool, error) {
 	status, err := d.app.Autostart.Status()
 	return status.Enabled, err
+}
+
+// migrateAutostartEntry rewrites a login entry made by an older build so it
+// carries the --autostart flag. It never turns start at login on. macOS is
+// skipped: its login item takes no arguments.
+func migrateAutostartEntry(d *Desktop) {
+	if runtime.GOOS == "darwin" {
+		return
+	}
+	if enabled, err := d.AutostartEnabled(); err == nil && enabled {
+		if err := d.setAutostart(true); err != nil {
+			log.Printf("desktop: could not update the start-at-login entry: %v", err)
+		}
+	}
+}
+
+func (d *Desktop) StartMinimized() bool {
+	prefs, err := loadPreferences()
+	return err == nil && prefs.StartMinimized
+}
+
+func (d *Desktop) SetStartMinimized(enabled bool) error {
+	return updatePreferences(func(prefs *preferences) {
+		prefs.StartMinimized = enabled
+		prefs.StartupDefaultsApplied = true
+	})
 }
 
 func (d *Desktop) OpenHelp(topic string) error {
@@ -133,8 +194,14 @@ func (d *Desktop) OpenHelp(topic string) error {
 func main() {
 	setProcessIdentity()
 	preview := flag.Bool("preview", false, "open the interface with sample data; no login, network setup or credential access")
+	launchedAtLogin := flag.Bool(strings.TrimPrefix(autostartFlag, "--"), false, "set by the start-at-login entry; starts in the tray when start minimized is on")
 	flag.Parse()
 	core := bridgeui.New(osVault{})
+	startHidden := false
+	if !*preview {
+		prefs, _ := loadPreferences()
+		startHidden = shouldStartHidden(*launchedAtLogin, prefs, len(core.State().Accounts))
+	}
 	service := &Desktop{core: core}
 	frontend, err := fs.Sub(assets, "frontend")
 	if err != nil {
@@ -161,7 +228,7 @@ func main() {
 	if *preview {
 		url = "/?preview=1"
 	}
-	window := app.Window.NewWithOptions(application.WebviewWindowOptions{Title: "iOxide", Width: 1080, Height: 800, MinWidth: 980, MinHeight: 760, URL: url, BackgroundColour: application.NewRGB(27, 28, 36), DevToolsEnabled: false, DefaultContextMenuDisabled: true})
+	window := app.Window.NewWithOptions(application.WebviewWindowOptions{Title: "iOxide", Width: 1080, Height: 800, MinWidth: 980, MinHeight: 760, URL: url, BackgroundColour: application.NewRGB(27, 28, 36), DevToolsEnabled: false, DefaultContextMenuDisabled: true, Hidden: startHidden})
 	service.window = window
 	window.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) { event.Cancel(); window.Hide() })
 	show := func(view string) { window.Show(); window.Focus(); app.Event.Emit("navigate", view) }
@@ -199,7 +266,10 @@ func main() {
 		go func() {
 			if !*preview {
 				_ = core.Start()
+				migrateAutostartEntry(service)
 			}
+			// A tray-only start must not hide a problem only the user can fix.
+			watchUntil := time.Now().Add(2 * time.Minute)
 			ticker := time.NewTicker(2 * time.Second)
 			defer ticker.Stop()
 			for {
@@ -209,6 +279,10 @@ func main() {
 					toggle.SetLabel("Open preview")
 				} else {
 					state := core.State()
+					if startHidden && time.Now().Before(watchUntil) && needsAttention(state) {
+						watchUntil = time.Time{}
+						application.InvokeAsync(func() { show("dashboard") })
+					}
 					label := "Bridge stopped"
 					if state.Running {
 						label = "Bridge running"
