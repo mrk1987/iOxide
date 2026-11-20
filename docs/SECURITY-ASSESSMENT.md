@@ -1,6 +1,6 @@
 # Security assessment
 
-Assessed for release 1.1.0 (CLI) and Desktop 1.0.0-beta.3, 2026-11-20. It is
+Assessed for release 1.2.0 (CLI and Desktop), 2026-11-21. It is
 reviewed again for every minor release and whenever authentication, storage or
 the network-facing server changes. The components and trust boundaries are
 described in [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -79,8 +79,10 @@ tokens.
 - In place: Dependabot and govulncheck; GitHub Actions pinned to commit SHAs;
   least-privilege workflow tokens; reproducible CLI builds; signed build
   provenance on every release; `main` only changes through pull requests that
-  pass CI.
-- Remaining: no SBOM is published yet; one maintainer reviews all changes.
+  pass CI, with every commit signed off (DCO).
+- Remaining: no SBOM is published yet; one maintainer reviews all changes;
+  release binaries are not code-signed, so the build attestation is the way to
+  check a download.
 
 ### 7. Proton changes its API
 

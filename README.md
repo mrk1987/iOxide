@@ -3,7 +3,7 @@
 # <img src="docs/assets/iOxide-logo.png" width="32" height="32" align="left" alt=""> iOxide
 
 [![Release](https://img.shields.io/github/v/release/mrk1987/iOxide?filter=v*&sort=semver&label=release)](https://github.com/mrk1987/iOxide/releases/latest)
-[![Desktop pre-release](https://img.shields.io/github/v/release/mrk1987/iOxide?include_prereleases&filter=*Desktop*&sort=date&display_name=release&label=pre-release)](https://github.com/mrk1987/iOxide/releases)
+[![Desktop](https://img.shields.io/github/v/release/mrk1987/iOxide?filter=*Desktop*&sort=date&display_name=release&label=desktop)](https://github.com/mrk1987/iOxide/releases)
 [![CI](https://github.com/mrk1987/iOxide/actions/workflows/ci.yml/badge.svg)](https://github.com/mrk1987/iOxide/actions/workflows/ci.yml)
 [![Desktop CI](https://github.com/mrk1987/iOxide/actions/workflows/desktop.yml/badge.svg)](https://github.com/mrk1987/iOxide/actions/workflows/desktop.yml)
 [![Go](https://img.shields.io/github/go-mod/go-version/mrk1987/iOxide)](go.mod)
@@ -11,7 +11,7 @@
 [![OpenSSF Baseline](https://www.bestpractices.dev/projects/16952/baseline)](https://www.bestpractices.dev/projects/16952)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**iOxide 1.1** is a CalDAV proxy for Proton Calendar. It logs in to your Proton
+**iOxide 1.2** is a CalDAV proxy for Proton Calendar. It logs in to your Proton
 account, decrypts your calendars locally and serves them over standard CalDAV,
 so the calendar app you already use (iOS and macOS Calendar, Thunderbird,
 DAVx⁵, ...) can read and write Proton Calendar directly.
@@ -47,7 +47,7 @@ nothing else.
 iOxide is unofficial and uses Proton's private web API. A Proton change can
 break it at any time.
 
-## Desktop app (beta)
+## Desktop app
 
 <p>
   <img src="docs/assets/desktop-setup.png" width="49%" alt="iOxide desktop setup: choosing a calendar app">
@@ -72,7 +72,7 @@ a window and a tray icon. It runs on Windows, macOS and Linux.
 - **Real status.** Shows how many calendars are loaded, the last successful
   sync and when your calendar app last connected.
 
-Download the newest `iOxide Desktop 1.0.0-beta.…` build from the
+Download the newest `iOxide Desktop` release from the
 [releases page](https://github.com/mrk1987/iOxide/releases). The builds are not
 code-signed yet; the [desktop guide](docs/desktop.md) explains the one-time
 confirmation on each system. Accounts you already added with the CLI show up
