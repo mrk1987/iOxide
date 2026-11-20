@@ -93,6 +93,14 @@ in a directory on your `PATH`, or run it from the extracted folder using
 `./ioxide` on Linux/macOS or `.\ioxide.exe` in PowerShell. Go is not needed
 to run a downloaded binary. `SHA256SUMS` contains checksums for all archives.
 
+Releases from now on also carry a signed build attestation, which proves an
+archive was built by this repository's GitHub Actions and not changed
+afterwards. Check one with the GitHub CLI:
+
+```sh
+gh attestation verify ioxide-<version>-linux-amd64.tar.gz -R mrk1987/iOxide
+```
+
 To build it yourself, use Go 1.27.4 or newer:
 
 ```sh
@@ -115,10 +123,13 @@ command prints a **bridge password**: a random key that your CalDAV clients
 use instead of your Proton password. It is shown only once; store it in your
 password manager.
 
-Your Proton session and passwords are stored encrypted under the bridge
-password in `auth.json` inside your user configuration directory
-(`~/.config/ioxide/` on Linux, `~/Library/Application Support/ioxide/` on
-macOS, `%AppData%\ioxide\` on Windows).
+Your Proton session is stored encrypted under the bridge password in
+`auth.json` inside your user configuration directory (`~/.config/ioxide/` on
+Linux, `~/Library/Application Support/ioxide/` on macOS, `%AppData%\ioxide\`
+on Windows). Like Proton Bridge, iOxide does not store your Proton password or
+mailbox password: it keeps the session tokens and the derived passphrases
+that unlock your keys. Accounts added by older versions are rewritten this way
+the first time they are used.
 
 ### 2. Run the server
 
@@ -178,18 +189,20 @@ Reporting a real client version usually avoids the challenge altogether:
 ioxide -app-version linux-bridge@3.25.0 auth <username>
 ```
 
-Use the same flag for `serve`, since the server logs in again when the session
-expires.
-
 If neither works, `ioxide import-session <username>` lets you paste the
 session values (`x-pm-uid`, access token, refresh token) from a logged-in
 Proton web tab, skipping the login entirely.
 
 ### The session stopped working
 
-Run `ioxide auth` again. This happens when the refresh token is revoked, for
-example after changing your password or signing out everywhere, and when you
-have two-factor authentication enabled and the stored refresh token expires.
+Sign in again. This happens when Proton ends the session, for example after
+you change your password or sign out everywhere; iOxide keeps no password to
+sign in by itself. The server log says "the Proton session has ended".
+
+- **CLI:** run `ioxide auth` again. It prints a new bridge password, so update
+  it in your calendar apps.
+- **Desktop app:** choose **Sign in again** on the account. The bridge password
+  stays the same, so your calendar apps keep working.
 
 ### Events are missing
 

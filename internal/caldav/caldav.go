@@ -41,6 +41,8 @@ type backend struct {
 	listed    bool
 	lastSync  time.Time
 	syncError string
+	// sessionEnded is set when the Proton session could not be renewed.
+	sessionEnded bool
 
 	// On-disk copy of the cache; see diskcache.go.
 	cachePath string
@@ -70,13 +72,15 @@ func (h *Handler) Close() { h.cancel(); <-h.done }
 
 // CacheStatus contains measured cache state, not estimated progress.
 type CacheStatus struct {
-	Listed     bool      `json:"listed"`
-	LastSync   time.Time `json:"lastSync"`
-	SyncError  string    `json:"syncError"`
-	Calendars  int       `json:"calendars"`
-	Loaded     int       `json:"loaded"`
-	Events     int       `json:"events"`
-	LastLoaded time.Time `json:"lastLoaded"`
+	Listed    bool      `json:"listed"`
+	LastSync  time.Time `json:"lastSync"`
+	SyncError string    `json:"syncError"`
+	// SessionEnded means only signing in again can resume syncing.
+	SessionEnded bool      `json:"sessionEnded"`
+	Calendars    int       `json:"calendars"`
+	Loaded       int       `json:"loaded"`
+	Events       int       `json:"events"`
+	LastLoaded   time.Time `json:"lastLoaded"`
 }
 
 func (h *Handler) Status() CacheStatus {
@@ -86,6 +90,7 @@ func (h *Handler) Status() CacheStatus {
 	status.Listed = h.backend.listed
 	status.LastSync = h.backend.lastSync
 	status.SyncError = h.backend.syncError
+	status.SessionEnded = h.backend.sessionEnded
 	status.Calendars = len(h.backend.cals)
 	for _, c := range h.backend.cals {
 		c.mu.RLock()

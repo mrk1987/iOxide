@@ -145,7 +145,7 @@ func saveStore(store map[string]string) error {
 		return fmt.Errorf("%s auth file: %w", step, err)
 	}
 
-	// The file holds a refresh token and the login password.
+	// The file holds refresh tokens and key passphrases, all encrypted.
 	if err := f.Chmod(0o600); err != nil {
 		return fail("protecting", err)
 	}

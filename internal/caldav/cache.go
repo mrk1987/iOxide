@@ -2,6 +2,7 @@ package caldav
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -331,11 +332,12 @@ func (b *backend) warm(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		syncOK := true
+		syncOK, sessionEnded := true, false
 		if time.Since(listedAt) >= listInterval {
 			cals, err := b.ListCalendars(ctx)
 			if err != nil {
 				syncOK = false
+				sessionEnded = errors.Is(err, protonmail.ErrSessionExpired)
 				b.logf("listing calendars: %v", err)
 			} else {
 				calIDs = calIDs[:0]
@@ -368,14 +370,19 @@ func (b *backend) warm(ctx context.Context) {
 			}
 			if err != nil {
 				syncOK = false
+				sessionEnded = sessionEnded || errors.Is(err, protonmail.ErrSessionExpired)
 				b.logf("updating calendar %s: %v", calID, err)
 			}
 		}
 		b.cacheMu.Lock()
-		if syncOK {
+		b.sessionEnded = sessionEnded
+		switch {
+		case syncOK:
 			b.lastSync = time.Now()
 			b.syncError = ""
-		} else {
+		case sessionEnded:
+			b.syncError = "Your Proton session has ended. Sign in again to resume syncing."
+		default:
 			b.syncError = "Could not refresh calendar data. Check your connection or sign in again."
 		}
 		b.cacheMu.Unlock()

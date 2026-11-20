@@ -28,6 +28,9 @@ type Account struct {
 	Username string `json:"username"`
 	Locked   bool   `json:"locked"`
 	Error    string `json:"error"`
+	// SignInAgain means the Proton session ended; a new sign-in with the same
+	// username keeps the bridge password.
+	SignInAgain bool `json:"signInAgain"`
 	bridge.AccountStatus
 }
 
@@ -45,9 +48,12 @@ type pendingLogin struct {
 	cancel             context.CancelFunc
 	client             *protonmail.Client
 	username, password string
-	auth               *protonmail.Auth
-	stage              string
-	challenge          *protonmail.HumanVerificationDetails
+	// reuseKey is the existing bridge password when an ended session is
+	// being signed in again.
+	reuseKey  string
+	auth      *protonmail.Auth
+	stage     string
+	challenge *protonmail.HumanVerificationDetails
 }
 
 // Service serialises mutations; snapshots never include a password or token.
@@ -93,6 +99,7 @@ func (s *Service) State() State {
 			entry.AccountStatus = preserveTimes(s.handler.Status(username), entry.AccountStatus)
 			s.history[username] = entry.AccountStatus
 		}
+		entry.SignInAgain = s.keys[username] != "" && (entry.Error == sessionEndedMessage || entry.SessionEnded)
 		result.Accounts = append(result.Accounts, entry)
 	}
 	return result
@@ -162,7 +169,7 @@ func (s *Service) Start() error {
 			s.keys[username] = key
 			s.mu.Unlock()
 			if err := h.Prepare(username, key); err != nil {
-				s.setAccountError(username, "Could not resume the account. Check your connection or sign in again.")
+				s.setAccountError(username, resumeError(err))
 			} else if keyErr != nil {
 				s.setAccountError(username, "Unlocked for this session only. The operating system credential store is unavailable.")
 			} else {
@@ -174,6 +181,18 @@ func (s *Service) Start() error {
 		}
 	}()
 	return nil
+}
+
+// sessionEndedMessage marks an account whose Proton session cannot be renewed.
+// Signing in again keeps its bridge password, so calendar apps keep working.
+const sessionEndedMessage = "Your Proton session has ended. Sign in again to resume syncing; your bridge password stays the same."
+
+// resumeError explains why an account with a known bridge password could not start.
+func resumeError(err error) string {
+	if errors.Is(err, auth.ErrSessionExpired) {
+		return sessionEndedMessage
+	}
+	return "Could not resume the account. Check your connection or sign in again."
 }
 
 func (s *Service) setAccountError(username, message string) {
@@ -255,14 +274,21 @@ func (s *Service) BeginLogin(username, password string) (State, error) {
 	if err != nil {
 		return s.State(), err
 	}
+	// An account whose session ended is signed in again under its existing
+	// bridge password; any other existing account is refused.
+	reuseKey := ""
 	for _, user := range users {
 		if strings.EqualFold(user, username) {
-			return s.State(), errors.New("this account is already added; unlock it or remove it before signing in again")
+			reuseKey = s.reusableKey(user)
+			if reuseKey == "" {
+				return s.State(), errors.New("this account is already added; unlock it or remove it before signing in again")
+			}
+			username = user
 		}
 	}
 	s.CancelLogin()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	p := &pendingLogin{ctx: ctx, cancel: cancel, username: username, password: password, client: s.newClient(ctx), stage: "signing-in"}
+	p := &pendingLogin{ctx: ctx, cancel: cancel, username: username, password: password, reuseKey: reuseKey, client: s.newClient(ctx), stage: "signing-in"}
 	s.mu.Lock()
 	s.pending = p
 	s.lastError = ""
@@ -275,6 +301,19 @@ func (s *Service) BeginLogin(username, password string) (State, error) {
 		s.mu.Unlock()
 	})
 	return s.attemptLogin(p)
+}
+
+// reusableKey returns the bridge password of an account that needs signing in
+// again, or "" when the account is fine or its password is unknown.
+func (s *Service) reusableKey(username string) string {
+	for _, account := range s.State().Accounts {
+		if account.Username == username && account.SignInAgain {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			return s.keys[username]
+		}
+	}
+	return ""
 }
 
 func (s *Service) setStage(p *pendingLogin, stage string) {
@@ -367,17 +406,47 @@ func (s *Service) finish(p *pendingLogin, mailboxPassword string) (State, error)
 	if p.ctx.Err() != nil {
 		return s.State(), errors.New("sign-in expired; start again")
 	}
-	salts, err := p.client.ListKeySalts()
-	if err == nil {
-		_, err = p.client.Unlock(p.auth, salts, mailboxPassword)
-	}
+	cached, err := auth.NewCachedAuth(p.client, p.auth, mailboxPassword)
 	if err != nil {
 		return s.State(), errors.New("could not unlock calendar keys; check the mailbox password and connection")
 	}
 	if p.ctx.Err() != nil {
 		return s.State(), errors.New("sign-in expired; start again")
 	}
-	return s.commit(p, &auth.CachedAuth{Auth: *p.auth, LoginPassword: p.password, MailboxPassword: mailboxPassword, KeySalts: salts})
+	if p.reuseKey != "" {
+		return s.recommit(p, cached)
+	}
+	return s.commit(p, cached)
+}
+
+// recommit stores a new sign-in for an account whose session ended, under its
+// existing bridge password, then restarts that account's calendar worker.
+func (s *Service) recommit(p *pendingLogin, cached *auth.CachedAuth) (State, error) {
+	key, err := auth.KeyFromPassword(p.reuseKey)
+	if err != nil {
+		return s.State(), err
+	}
+	s.mu.Lock()
+	if s.pending != p || p.ctx.Err() != nil {
+		s.mu.Unlock()
+		return s.State(), errors.New("sign-in was cancelled; nothing was changed")
+	}
+	if err := auth.Replace(cached, p.username, key); err != nil {
+		s.mu.Unlock()
+		return s.State(), err
+	}
+	h := s.handler
+	s.pending = nil
+	p.cancel()
+	delete(s.accountErrors, p.username)
+	s.mu.Unlock()
+	if h != nil {
+		h.Forget(p.username)
+		if err := h.Prepare(p.username, p.reuseKey); err != nil {
+			s.setAccountError(p.username, resumeError(err))
+		}
+	}
+	return s.State(), nil
 }
 
 func (s *Service) commit(p *pendingLogin, cached *auth.CachedAuth) (State, error) {
@@ -434,12 +503,18 @@ func (s *Service) UnlockAccount(username, password string) error {
 	if h == nil {
 		return errors.New("start the bridge first")
 	}
-	if err := h.Prepare(username, password); err != nil {
+	prepareErr := h.Prepare(username, password)
+	// An ended session still proves the bridge password is right; keep it so
+	// the account can be signed in again without changing it.
+	if prepareErr != nil && !errors.Is(prepareErr, auth.ErrSessionExpired) {
 		return errors.New("could not unlock this account; check the bridge password and connection")
 	}
 	s.mu.Lock()
 	s.keys[username] = password
 	delete(s.accountErrors, username)
+	if prepareErr != nil {
+		s.accountErrors[username] = sessionEndedMessage
+	}
 	s.mu.Unlock()
 	if err := s.vault.Set(username, password); err != nil {
 		s.setAccountError(username, "Unlocked for this session only. Could not save the bridge password in the operating system credential store.")

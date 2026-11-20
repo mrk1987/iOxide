@@ -12,6 +12,19 @@ All notable changes to this project are documented here. The format follows
   stays in the tray, unless the bridge cannot start or an account needs its
   bridge password.
 
+### Security
+
+- The Proton login password and mailbox password are no longer stored. Like
+  Proton Bridge, iOxide keeps only the session tokens and the derived
+  passphrases that unlock the account's keys. Records written by older
+  versions are rewritten without passwords the first time they are opened.
+- When Proton ends a session (password change, sign out everywhere), iOxide
+  now asks you to sign in again instead of logging in with a stored password.
+  The desktop app shows **Sign in again** and keeps the account's bridge
+  password, so calendar apps need no changes.
+- CLI and desktop releases carry signed build provenance attestations; check an
+  archive with `gh attestation verify <archive> -R mrk1987/iOxide`.
+
 ### Changed
 
 - Desktop: start at login and start minimized switch on once, after the first

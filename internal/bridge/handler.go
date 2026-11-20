@@ -79,6 +79,21 @@ func (h *Handler) Status(username string) AccountStatus {
 	return AccountStatus{CacheStatus: entry.handler.Status(), LastClient: entry.lastClient}
 }
 
+// Forget closes username's calendar worker and session so the next request
+// starts again from the stored credentials.
+func (h *Handler) Forget(username string) {
+	// Drop the session first, so a request arriving in between opens the
+	// stored credentials instead of reviving the old session.
+	h.manager.Forget(username)
+	h.mu.Lock()
+	entry := h.accounts[username]
+	delete(h.accounts, username)
+	h.mu.Unlock()
+	if entry != nil {
+		entry.handler.Close()
+	}
+}
+
 func (h *Handler) Close() {
 	h.mu.Lock()
 	h.closed = true

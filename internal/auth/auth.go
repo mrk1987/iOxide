@@ -32,14 +32,47 @@ const (
 // ErrUnauthorized is returned when the username or bridge password is wrong.
 var ErrUnauthorized = errors.New("invalid username or password")
 
+// ErrSessionExpired is protonmail.ErrSessionExpired, re-exported for callers
+// that only deal with stored credentials.
+var ErrSessionExpired = protonmail.ErrSessionExpired
+
 // CachedAuth is everything needed to resume a Proton session without the
-// user: the session tokens, the passwords to re-login when they expire, and
-// the key salts to unlock the account's keys.
+// user: the session tokens and the passphrases that unlock the account's keys.
+// Like Proton Bridge, it holds neither the login nor the mailbox password.
 type CachedAuth struct {
 	protonmail.Auth
-	LoginPassword   string
-	MailboxPassword string
-	KeySalts        map[string][]byte
+	KeyPassphrases protonmail.KeyPassphrases `json:",omitempty"`
+
+	// Records written before KeyPassphrases held the passwords themselves.
+	// They are read once, replaced by KeyPassphrases and never written again.
+	LoginPassword   string            `json:",omitempty"`
+	MailboxPassword string            `json:",omitempty"`
+	KeySalts        map[string][]byte `json:",omitempty"`
+}
+
+// NewCachedAuth unlocks the account's keys with the mailbox password to prove
+// it is right, and returns a record that keeps only what resuming needs.
+func NewCachedAuth(c *protonmail.Client, a *protonmail.Auth, mailboxPassword string) (*CachedAuth, error) {
+	keySalts, err := c.ListKeySalts()
+	if err != nil {
+		return nil, fmt.Errorf("fetching key salts: %w", err)
+	}
+	_, passphrases, err := c.UnlockWithPassword(a, keySalts, mailboxPassword)
+	if err != nil {
+		return nil, err
+	}
+	return &CachedAuth{Auth: *a, KeyPassphrases: passphrases}, nil
+}
+
+// legacy reports whether the record still holds passwords.
+func (cached *CachedAuth) legacy() bool {
+	return len(cached.KeyPassphrases) == 0
+}
+
+// forgetPasswords keeps only the derived key passphrases.
+func (cached *CachedAuth) forgetPasswords(passphrases protonmail.KeyPassphrases) {
+	cached.KeyPassphrases = passphrases
+	cached.LoginPassword, cached.MailboxPassword, cached.KeySalts = "", "", nil
 }
 
 // GeneratePassword returns a fresh secret key and its bridge-password form.
@@ -49,6 +82,12 @@ func GeneratePassword() (secretKey *[keySize]byte, password string, err error) {
 		return nil, "", fmt.Errorf("generating key: %w", err)
 	}
 	return &key, base64.StdEncoding.EncodeToString(key[:]), nil
+}
+
+// KeyFromPassword returns the secret key behind an existing bridge password,
+// so an account can be signed in again without changing it.
+func KeyFromPassword(password string) (*[keySize]byte, error) {
+	return parsePassword(password)
 }
 
 func parsePassword(password string) (*[keySize]byte, error) {
@@ -99,6 +138,47 @@ func CreateAndSave(cached *CachedAuth, username string, secretKey *[keySize]byte
 	return encryptAndSave(cached, username, secretKey, true)
 }
 
+// Replace stores a new sign-in for an existing account under its existing
+// bridge password, so calendar apps keep working. It refuses when that
+// password does not open the stored entry, which means another process
+// replaced the account in the meantime.
+func Replace(cached *CachedAuth, username string, secretKey *[keySize]byte) error {
+	unlock, err := lockStore()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	store, err := loadStore()
+	if err != nil {
+		return err
+	}
+	encrypted, ok := store[username]
+	if !ok {
+		return errors.New("this account was removed by another iOxide process; add it again")
+	}
+	cleartext, err := decrypt(encrypted, secretKey)
+	if err != nil {
+		return errors.New("this account was changed by another iOxide process; unlock it with its new bridge password")
+	}
+	// Calendar apps keep using this bridge password, so it must stay with
+	// the same Proton account.
+	var previous CachedAuth
+	if err := json.Unmarshal(cleartext, &previous); err != nil {
+		return fmt.Errorf("decoding stored credentials: %w", err)
+	}
+	if previous.UserID != "" && cached.UserID != "" && previous.UserID != cached.UserID {
+		return errors.New("this sign-in is for a different Proton account; remove the account and add it again instead")
+	}
+	updated, err := json.Marshal(cached)
+	if err != nil {
+		return fmt.Errorf("encoding credentials: %w", err)
+	}
+	if store[username], err = encrypt(updated, secretKey); err != nil {
+		return err
+	}
+	return saveStore(store)
+}
+
 func encryptAndSave(cached *CachedAuth, username string, secretKey *[keySize]byte, createOnly bool) error {
 	unlock, err := lockStore()
 	if err != nil {
@@ -141,16 +221,24 @@ func ListUsernames() ([]string, error) {
 // authenticate refreshes the stored session, falling back to a full login
 // with the stored password when the refresh token is no longer valid, and
 // unlocks the account's keys. It updates cached with the new session.
-func authenticate(c *protonmail.Client, cached *CachedAuth, username string) (openpgp.EntityList, error) {
+//
+// save is called as soon as the session tokens change. Proton invalidates the
+// old refresh token on every refresh, and iOxide keeps no password to recover,
+// so the new tokens must reach disk before anything else can fail.
+func authenticate(c *protonmail.Client, cached *CachedAuth, username string, save func() error) (openpgp.EntityList, error) {
 	if cached.RefreshToken == "" {
 		// An imported session may have no refresh token. Use its access
 		// token as long as it lasts.
-		return c.Unlock(&cached.Auth, cached.KeySalts, cached.MailboxPassword)
+		return unlockKeys(c, cached)
 	}
 
 	auth, err := c.AuthRefresh(&cached.Auth)
 	var apiErr *protonmail.APIError
 	if errors.As(err, &apiErr) && apiErr.Code == protonmail.CodeInvalidRefreshToken {
+		if cached.LoginPassword == "" {
+			return nil, ErrSessionExpired
+		}
+		// A record from an older build: use its password this one last time.
 		authInfo, err := c.AuthInfo(username)
 		if err != nil {
 			return nil, fmt.Errorf("re-authenticating: %w", err)
@@ -160,14 +248,36 @@ func authenticate(c *protonmail.Client, cached *CachedAuth, username string) (op
 			return nil, fmt.Errorf("re-authenticating: %w", err)
 		}
 		if auth.TwoFactor.Enabled != 0 {
-			return nil, errors.New("re-authenticating: two-factor authentication is enabled, log in again with `ioxide auth`")
+			return nil, fmt.Errorf("re-authenticating needs a two-factor code: %w", ErrSessionExpired)
 		}
 	} else if err != nil {
 		return nil, err
 	}
 	cached.Auth = *auth
+	if err := save(); err != nil {
+		return nil, fmt.Errorf("saving the renewed session: %w", err)
+	}
 
-	return c.Unlock(auth, cached.KeySalts, cached.MailboxPassword)
+	return unlockKeys(c, cached)
+}
+
+// unlockKeys unlocks with the stored key passphrases. A record from an older
+// build is unlocked with its mailbox password once and then rewritten without
+// any password; the caller saves the record after every authenticate.
+func unlockKeys(c *protonmail.Client, cached *CachedAuth) (openpgp.EntityList, error) {
+	if !cached.legacy() {
+		keys, err := c.UnlockWithKeyPassphrases(&cached.Auth, cached.KeyPassphrases)
+		if errors.Is(err, protonmail.ErrMissingKeyPassphrase) {
+			return nil, ErrSessionExpired
+		}
+		return keys, err
+	}
+	keys, passphrases, err := c.UnlockWithPassword(&cached.Auth, cached.KeySalts, cached.MailboxPassword)
+	if err != nil {
+		return nil, err
+	}
+	cached.forgetPasswords(passphrases)
+	return keys, nil
 }
 
 // Session is a logged-in Proton session for one user.
@@ -242,6 +352,14 @@ func (m *Manager) Auth(username, password string) (*Session, error) {
 	return s, nil
 }
 
+// Forget drops the open session for username, so the next request reads the
+// stored credentials again, for example after the account was signed in again.
+func (m *Manager) Forget(username string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.sessions, username)
+}
+
 func (m *Manager) openSession(username string, secretKey *[keySize]byte) (*Session, error) {
 	store, err := loadStore()
 	if err != nil {
@@ -261,19 +379,27 @@ func (m *Manager) openSession(username string, secretKey *[keySize]byte) (*Sessi
 	}
 
 	c := m.newClient()
+	save := func() error { return EncryptAndSave(&cached, username, secretKey) }
 	c.ReAuth = func() error {
-		if _, err := authenticate(c, &cached, username); err != nil {
+		// An access-token-only session (imported without a refresh token)
+		// cannot be renewed. Retrying it would resend the expired token
+		// from inside the renewal and wait on itself.
+		if cached.RefreshToken == "" {
+			return ErrSessionExpired
+		}
+		if _, err := authenticate(c, &cached, username, save); err != nil {
 			return err
 		}
-		return EncryptAndSave(&cached, username, secretKey)
+		return save()
 	}
 
-	privateKeys, err := authenticate(c, &cached, username)
+	privateKeys, err := authenticate(c, &cached, username, save)
 	if err != nil {
 		return nil, err
 	}
-	// authenticate rotated the refresh token; persist it.
-	if err := EncryptAndSave(&cached, username, secretKey); err != nil {
+	// Persist the rotated tokens and, for a record from an older build, the
+	// version without passwords.
+	if err := save(); err != nil {
 		return nil, err
 	}
 

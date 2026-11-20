@@ -3,6 +3,7 @@ package protonmail
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -282,16 +283,58 @@ func decryptPrivateKeyToken(key *PrivateKey, userKeyRing openpgp.EntityList) ([]
 	return b, err
 }
 
-func unlockPrivateKey(key *PrivateKey, userKeyRing openpgp.EntityList, keySalt []byte, passphraseBytes []byte) (*openpgp.Entity, error) {
+// KeyPassphrases maps a key ID to the passphrase that unlocks that key: the
+// bcrypt-derived key password, never the mailbox password itself. Keys
+// without a salt are refused (ErrUnsaltedKey) rather than stored.
+type KeyPassphrases map[string][]byte
+
+// keyPassphrase returns the passphrase for a key that has no token.
+type keyPassphrase func(key *PrivateKey) ([]byte, error)
+
+// ErrUnsaltedKey means a key is encrypted with the mailbox password itself.
+// Its passphrase would be the password, so iOxide refuses to store it.
+var ErrUnsaltedKey = errors.New("this key has no salt and would require storing the mailbox password; change the password in Proton to upgrade it")
+
+func passwordPassphrase(keySalts map[string][]byte, password []byte) keyPassphrase {
+	return func(key *PrivateKey) ([]byte, error) {
+		if salt := keySalts[key.ID]; salt != nil {
+			return computeKeyPassword(password, salt)
+		}
+		return nil, ErrUnsaltedKey
+	}
+}
+
+// ErrSessionExpired means the stored session can no longer be renewed, for
+// example after a password change or when the session was revoked. Only
+// signing in again fixes it; iOxide does not keep the password to do so.
+var ErrSessionExpired = errors.New("the Proton session has ended; sign in again")
+
+// ErrMissingKeyPassphrase means a key appeared that the stored passphrases
+// cannot unlock, for example after a password change; signing in again fixes it.
+var ErrMissingKeyPassphrase = errors.New("no stored passphrase for this key")
+
+func storedPassphrase(passphrases KeyPassphrases) keyPassphrase {
+	return func(key *PrivateKey) ([]byte, error) {
+		passphrase, ok := passphrases[key.ID]
+		if !ok {
+			return nil, ErrMissingKeyPassphrase
+		}
+		return passphrase, nil
+	}
+}
+
+func unlockPrivateKey(key *PrivateKey, userKeyRing openpgp.EntityList, passphraseFor keyPassphrase, used KeyPassphrases) (*openpgp.Entity, error) {
 	entity, err := key.Entity()
 	if err != nil {
 		return nil, err
 	}
 
-	if key.Token != "" {
+	var passphraseBytes []byte
+	token := key.Token != ""
+	if token {
 		passphraseBytes, err = decryptPrivateKeyToken(key, userKeyRing)
-	} else if keySalt != nil {
-		passphraseBytes, err = computeKeyPassword(passphraseBytes, keySalt)
+	} else {
+		passphraseBytes, err = passphraseFor(key)
 	}
 	if err != nil {
 		return nil, err
@@ -300,19 +343,25 @@ func unlockPrivateKey(key *PrivateKey, userKeyRing openpgp.EntityList, keySalt [
 	if err := unlockEntity(entity, passphraseBytes); err != nil {
 		return nil, err
 	}
+	// Token keys are unlocked through the user key and need nothing stored.
+	if !token && used != nil {
+		used[key.ID] = passphraseBytes
+	}
 
 	return entity, nil
 }
 
-func unlockKeyRing(keys []*PrivateKey, userKeyRing openpgp.EntityList, keySalts map[string][]byte, passphraseBytes []byte) (openpgp.EntityList, error) {
+func unlockKeyRing(keys []*PrivateKey, userKeyRing openpgp.EntityList, passphraseFor keyPassphrase, used KeyPassphrases) (openpgp.EntityList, error) {
 	var keyRing openpgp.EntityList
+	var cause error
 	for _, key := range keys {
 		if key.Active != 1 {
 			continue
 		}
 
-		entity, err := unlockPrivateKey(key, userKeyRing, keySalts[key.ID], passphraseBytes)
+		entity, err := unlockPrivateKey(key, userKeyRing, passphraseFor, used)
 		if err != nil {
+			cause = keepCause(cause, err)
 			log.Printf("warning: failed to unlock key %v: %v", key.Fingerprint, err)
 			continue
 		}
@@ -321,14 +370,58 @@ func unlockKeyRing(keys []*PrivateKey, userKeyRing openpgp.EntityList, keySalts 
 	}
 
 	if len(keyRing) == 0 {
-		return nil, fmt.Errorf("failed to unlock any key")
+		return nil, noKeysUnlocked(cause)
 	}
 	return keyRing, nil
+}
+
+// keepCause remembers the first failure that a caller can act on: a stored
+// record that no longer fits the account, or a key iOxide refuses to store.
+func keepCause(cause, err error) error {
+	if cause != nil {
+		return cause
+	}
+	for _, sentinel := range []error{ErrMissingKeyPassphrase, ErrUnsaltedKey} {
+		if errors.Is(err, sentinel) {
+			return sentinel
+		}
+	}
+	return nil
+}
+
+// noKeysUnlocked keeps that cause visible through errors.Is.
+func noKeysUnlocked(cause error) error {
+	if cause != nil {
+		return fmt.Errorf("failed to unlock any key: %w", cause)
+	}
+	return errors.New("failed to unlock any key")
 }
 
 // Unlock decrypts the account's private keys with the mailbox password and
 // makes the client use auth's session.
 func (c *Client) Unlock(auth *Auth, keySalts map[string][]byte, passphrase string) (openpgp.EntityList, error) {
+	keyRing, _, err := c.UnlockWithPassword(auth, keySalts, passphrase)
+	return keyRing, err
+}
+
+// UnlockWithPassword is Unlock that also returns the passphrase that unlocked
+// each key, so the keys can be unlocked again without the mailbox password.
+func (c *Client) UnlockWithPassword(auth *Auth, keySalts map[string][]byte, password string) (openpgp.EntityList, KeyPassphrases, error) {
+	used := KeyPassphrases{}
+	keyRing, err := c.unlock(auth, passwordPassphrase(keySalts, []byte(password)), used)
+	if err != nil {
+		return nil, nil, err
+	}
+	return keyRing, used, nil
+}
+
+// UnlockWithKeyPassphrases unlocks the account's keys with passphrases
+// returned by UnlockWithPassword.
+func (c *Client) UnlockWithKeyPassphrases(auth *Auth, passphrases KeyPassphrases) (openpgp.EntityList, error) {
+	return c.unlock(auth, storedPassphrase(passphrases), nil)
+}
+
+func (c *Client) unlock(auth *Auth, passphraseFor keyPassphrase, used KeyPassphrases) (openpgp.EntityList, error) {
 	c.setSession(auth.UID, auth.AccessToken)
 
 	u, err := c.GetCurrentUser()
@@ -336,7 +429,7 @@ func (c *Client) Unlock(auth *Auth, keySalts map[string][]byte, passphrase strin
 		return nil, err
 	}
 
-	userKeyRing, err := unlockKeyRing(u.Keys, nil, keySalts, []byte(passphrase))
+	userKeyRing, err := unlockKeyRing(u.Keys, nil, passphraseFor, used)
 	if err != nil {
 		return nil, err
 	}
@@ -347,9 +440,11 @@ func (c *Client) Unlock(auth *Auth, keySalts map[string][]byte, passphrase strin
 	}
 
 	var keyRing openpgp.EntityList
+	var cause error
 	for _, addr := range addrs {
-		addrKeyRing, err := unlockKeyRing(addr.Keys, userKeyRing, keySalts, []byte(passphrase))
+		addrKeyRing, err := unlockKeyRing(addr.Keys, userKeyRing, passphraseFor, used)
 		if err != nil {
+			cause = keepCause(cause, err)
 			log.Printf("warning: failed to unlock address <%v>: %v", addr.Email, err)
 			continue
 		}
@@ -358,7 +453,7 @@ func (c *Client) Unlock(auth *Auth, keySalts map[string][]byte, passphrase strin
 	}
 
 	if len(keyRing) == 0 {
-		return nil, fmt.Errorf("failed to unlock any key")
+		return nil, noKeysUnlocked(cause)
 	}
 
 	return keyRing, nil

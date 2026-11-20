@@ -49,7 +49,7 @@ func cmdAuth(opts *options, username string) error {
 		}
 	}
 
-	return storeSession(c, a, username, loginPassword, mailboxPassword)
+	return storeSession(c, a, username, mailboxPassword)
 }
 
 // login performs the SRP login. If Proton gates it behind a human
@@ -125,7 +125,7 @@ func cmdImportSession(opts *options, username string) error {
 		PasswordMode: protonmail.PasswordSingle,
 	}
 
-	if err := storeSession(c, a, username, "", mailboxPassword); err != nil {
+	if err := storeSession(c, a, username, mailboxPassword); err != nil {
 		return err
 	}
 	if refreshToken == "" {
@@ -136,25 +136,18 @@ func cmdImportSession(opts *options, username string) error {
 
 // storeSession unlocks the account keys to prove the session and passwords
 // are right, then saves everything encrypted under a new bridge password.
-func storeSession(c *protonmail.Client, a *protonmail.Auth, username, loginPassword, mailboxPassword string) error {
-	keySalts, err := c.ListKeySalts()
+// Neither password is stored: only the session and the derived key passphrases.
+func storeSession(c *protonmail.Client, a *protonmail.Auth, username, mailboxPassword string) error {
+	cached, err := auth.NewCachedAuth(c, a, mailboxPassword)
 	if err != nil {
-		return fmt.Errorf("fetching key salts (is the session valid?): %w", err)
-	}
-	if _, err := c.Unlock(a, keySalts, mailboxPassword); err != nil {
-		return fmt.Errorf("unlocking keys with the mailbox password: %w", err)
+		return fmt.Errorf("unlocking keys with the mailbox password (is the session valid?): %w", err)
 	}
 
 	secretKey, bridgePassword, err := auth.GeneratePassword()
 	if err != nil {
 		return err
 	}
-	err = auth.EncryptAndSave(&auth.CachedAuth{
-		Auth:            *a,
-		LoginPassword:   loginPassword,
-		MailboxPassword: mailboxPassword,
-		KeySalts:        keySalts,
-	}, username, secretKey)
+	err = auth.EncryptAndSave(cached, username, secretKey)
 	if err != nil {
 		return err
 	}

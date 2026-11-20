@@ -22,6 +22,11 @@ The builds are not code-signed, so each system asks for confirmation once:
   `xattr -dr com.apple.quarantine /Applications/iOxide.app` once before opening it.
 - **Linux:** install GTK 4 and WebKitGTK 6 (Ubuntu 24.04:
   `sudo apt install libgtk-4-1 libwebkitgtk-6.0-4`), then run `./ioxide-desktop`.
+
+Without code signing, the way to check a download is its build attestation,
+published with each new release: `gh attestation verify <archive> -R mrk1987/iOxide`
+confirms the archive was built by this repository's GitHub Actions and has not
+been changed since.
   A Secret Service keyring and a tray are needed.
 
 Report problems at https://github.com/mrk1987/iOxide/issues. Do not include
@@ -75,6 +80,12 @@ explicit reveal lasts 20 seconds. Copied bridge passwords clear after 45 seconds
 while iOxide is running, provided the clipboard has not changed. Removing an
 account deletes its local encrypted credentials and saved bridge key, not the
 calendars in Proton. It does not revoke other Proton sessions.
+
+Neither your Proton password nor your mailbox password is stored: only the
+session tokens and the derived passphrases that unlock your keys. When Proton
+ends the session (a password change, or signing out everywhere), the account
+shows **Sign in again**. Signing in again keeps the account's bridge password,
+so calendar apps keep working without changes.
 
 ## Build
 

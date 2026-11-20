@@ -6,12 +6,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -99,6 +101,9 @@ type Client struct {
 	accessToken string
 
 	reAuthMu sync.Mutex
+	// ended is set once renewal reports ErrSessionExpired. Every later request
+	// fails the same way, so callers keep seeing that only a new sign-in helps.
+	ended atomic.Bool
 
 	hvToken string
 	hvType  string
@@ -198,6 +203,9 @@ func (c *Client) newJSONRequest(method, path string, body interface{}) (*http.Re
 }
 
 func (c *Client) do(req *http.Request) (*http.Response, error) {
+	if c.ended.Load() {
+		return nil, ErrSessionExpired
+	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:101.0) Gecko/20100101 Firefox/101.0")
 
 	httpClient := c.HTTPClient
@@ -244,7 +252,11 @@ func (c *Client) reAuth(staleAuthorization string) error {
 	}
 	// Drop the expired token so the renewal request does not carry it.
 	c.setSession(uid, "")
-	return c.ReAuth()
+	err := c.ReAuth()
+	if errors.Is(err, ErrSessionExpired) {
+		c.ended.Store(true)
+	}
+	return err
 }
 
 func (c *Client) doJSON(req *http.Request, respData interface{}) error {
