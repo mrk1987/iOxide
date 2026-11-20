@@ -8,14 +8,23 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeProton serves a calendar event listing of n events in pages, and a
 // small change log.
+//
+// Each page request waits until a second one is in flight (or overlapWait
+// passes), so a parallel client is always seen as parallel. Without this, a
+// slow CI runner could finish each request before the next began and the
+// parallelism check failed at random.
 func fakeProton(t *testing.T, n int) (*Client, *int32) {
 	t.Helper()
+	const overlapWait = 2 * time.Second
 	var mu sync.Mutex
 	var inFlight, maxInFlight int32
+	overlap := make(chan struct{})
+	var overlapOnce sync.Once
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /calendar/v1/cal1/events", func(w http.ResponseWriter, r *http.Request) {
@@ -24,8 +33,15 @@ func fakeProton(t *testing.T, n int) (*Client, *int32) {
 		if inFlight > maxInFlight {
 			maxInFlight = inFlight
 		}
+		if maxInFlight >= 2 {
+			overlapOnce.Do(func() { close(overlap) })
+		}
 		mu.Unlock()
 		defer func() { mu.Lock(); inFlight--; mu.Unlock() }()
+		select {
+		case <-overlap:
+		case <-time.After(overlapWait):
+		}
 
 		page, _ := strconv.Atoi(r.URL.Query().Get("Page"))
 		size, _ := strconv.Atoi(r.URL.Query().Get("PageSize"))
