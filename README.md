@@ -3,7 +3,6 @@
 # <img src="docs/assets/iOxide-logo.png" width="32" height="32" align="left" alt=""> iOxide
 
 [![Release](https://img.shields.io/github/v/release/mrk1987/iOxide?filter=v*&sort=semver&label=release)](https://github.com/mrk1987/iOxide/releases/latest)
-[![Desktop](https://img.shields.io/github/v/release/mrk1987/iOxide?filter=*Desktop*&sort=date&display_name=release&label=desktop)](https://github.com/mrk1987/iOxide/releases)
 [![CI](https://github.com/mrk1987/iOxide/actions/workflows/ci.yml/badge.svg)](https://github.com/mrk1987/iOxide/actions/workflows/ci.yml)
 [![Desktop CI](https://github.com/mrk1987/iOxide/actions/workflows/desktop.yml/badge.svg)](https://github.com/mrk1987/iOxide/actions/workflows/desktop.yml)
 [![Go](https://img.shields.io/github/go-mod/go-version/mrk1987/iOxide)](go.mod)
