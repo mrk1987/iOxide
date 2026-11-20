@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `main` is protected: every change goes through a pull request that must pass
+  CI, and every commit must be signed off (DCO), checked in CI.
+- New documents: architecture (`docs/ARCHITECTURE.md`), security assessment
+  (`docs/SECURITY-ASSESSMENT.md`) and governance (`.github/GOVERNANCE.md`);
+  CONTRIBUTING.md now covers sign-off and how dependencies are chosen and
+  tracked.
+
+### Fixed
+
+- README security notes still said `auth.json` holds the Proton passwords; it
+  has held only the session and derived key passphrases since 1.1.0.
+
 ## [1.1.0] - 2026-11-20
 
 Desktop pre-release: 1.0.0-beta.3. Both were rebuilt on 2026-11-20 to include
