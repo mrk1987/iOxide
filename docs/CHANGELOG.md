@@ -6,8 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-21
+
+The desktop app leaves beta. CLI and desktop are released together as 1.2.0.
+
 ### Changed
 
+- Desktop: the first release that is not a pre-release. Desktop releases now
+  use the same version number as the CLI and are tagged `desktop-v1.2.0`; the
+  CLI release remains the "latest" release on GitHub. The macOS bundle and
+  the Windows manifest carry version 1.2.0 (they said 1.0.0 and 0.1.0).
 - `main` is protected: every change goes through a pull request that must pass
   CI, and every commit must be signed off (DCO), checked in CI.
 - New documents: architecture (`docs/ARCHITECTURE.md`), security assessment
