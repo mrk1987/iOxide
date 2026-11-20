@@ -6,18 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-20
+
+Desktop pre-release: 1.0.0-beta.3. Both were rebuilt on 2026-11-20 to include
+the fix for #8.
+
 ### Fixed
 
 - Creating or changing events failed with Proton error `[2001] Provide data
   signed using the address key` on accounts with more than one address
   (aliases, `pm.me`, custom domains). Events were signed with the first
   address's key; they are now signed with the primary key of the address that
-  owns the calendar (#8). Desktop 1.0.0-beta.3 was rebuilt with this fix on
-  2026-11-20.
-
-## [1.1.0] - 2026-11-20
-
-Desktop pre-release: 1.0.0-beta.3.
+  owns the calendar (#8).
 
 ### Added
 
