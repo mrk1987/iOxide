@@ -13,13 +13,11 @@
   encryption, not a claim of overall security equivalence with Proton Bridge.
   Implementation is explicitly postponed.
 
-- [ ] **Merge Dependabot PR #7: Wails 3.0.0 → 3.1.0 for the desktop app**
-  (added 2026-11-20, not critical). Rebase it first (`@dependabot rebase`); its
-  checks ran on 2026-11-13, before Go 1.27.4 and the 1.1.0 changes. Relevant
-  fixes: tray tooltip, a tray created after Run no longer dropped, WebView2
-  request bodies kept without Content-Length, dialogs before Run no longer
-  hang. After merging, smoke-test the tray, start minimized and sign-in, then
-  ship it in the next desktop beta.
+- [ ] **Smoke-test the desktop app on Wails 3.1.0 before the next desktop beta**
+  (merged in #7 on 2026-11-20 after CI passed on all six platforms; not yet run
+  by hand). Check the tray menu and tooltip, start minimized at login, and a
+  full sign-in. The running desktop app is single-instance, even in
+  `-preview`, so quit it first.
 
 - [ ] **Close CodeQL alert #8 (`js/unvalidated-dynamic-method-call`)** (added
   2026-11-20, not critical). `desktop/frontend/app.js:214` calls

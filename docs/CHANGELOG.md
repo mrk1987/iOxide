@@ -14,6 +14,9 @@ All notable changes to this project are documented here. The format follows
   (`docs/SECURITY-ASSESSMENT.md`) and governance (`.github/GOVERNANCE.md`);
   CONTRIBUTING.md now covers sign-off and how dependencies are chosen and
   tracked.
+- Desktop: Wails 3.1.0 (from 3.0.0). Fixes include the tray tooltip, a tray
+  created after start-up no longer being dropped, and WebView2 request bodies
+  without Content-Length (#7).
 
 ### Fixed
 
