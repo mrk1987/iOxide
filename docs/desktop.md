@@ -7,9 +7,9 @@ iOxide has two separate executables:
 | `ioxide` / `ioxide.exe` | Command-line bridge for servers, containers and headless use. |
 | `ioxide-desktop` / `ioxide-desktop.exe` | Desktop bridge with account setup, a native window and a tray menu. On macOS it is packaged as `iOxide.app`. |
 
-CLI and desktop share a version number but are published as separate releases:
-`v1.2.0` is the CLI and `desktop-v1.2.0` is iOxide Desktop. Desktop test builds,
-when there are any, are pre-releases with a suffix such as `desktop-v1.3.0-beta.1`.
+CLI and desktop are published together in one release per version. The desktop
+archives are the `ioxide-desktop-v…` files. Test builds, when there are any, are
+pre-releases with a suffix such as `v1.3.0-beta.1`.
 
 ## Install
 

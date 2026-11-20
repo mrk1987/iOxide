@@ -71,8 +71,8 @@ a window and a tray icon. It runs on Windows, macOS and Linux.
 - **Real status.** Shows how many calendars are loaded, the last successful
   sync and when your calendar app last connected.
 
-Download the newest `iOxide Desktop` release from the
-[releases page](https://github.com/mrk1987/iOxide/releases). The builds are not
+Download the `ioxide-desktop-…` archive for your system from the
+[latest release](https://github.com/mrk1987/iOxide/releases/latest). The builds are not
 code-signed yet; the [desktop guide](docs/desktop.md) explains the one-time
 confirmation on each system. Accounts you already added with the CLI show up
 in the app and unlock with their bridge password. Don't run the CLI server and
