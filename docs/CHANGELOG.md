@@ -12,7 +12,8 @@ All notable changes to this project are documented here. The format follows
   signed using the address key` on accounts with more than one address
   (aliases, `pm.me`, custom domains). Events were signed with the first
   address's key; they are now signed with the primary key of the address that
-  owns the calendar (#8).
+  owns the calendar (#8). Desktop 1.0.0-beta.3 was rebuilt with this fix on
+  2026-11-20.
 
 ## [1.1.0] - 2026-11-20
 
