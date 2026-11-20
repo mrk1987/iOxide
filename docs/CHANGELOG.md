@@ -22,6 +22,9 @@ All notable changes to this project are documented here. The format follows
 
 - README security notes still said `auth.json` holds the Proton passwords; it
   has held only the session and derived key passphrases since 1.1.0.
+- Desktop Settings said "Passwords are kept in your OS credential store",
+  which read as if the Proton password were stored. It now says the Proton
+  password is not stored and only bridge passwords are.
 
 ## [1.1.0] - 2026-11-20
 
