@@ -2,10 +2,15 @@
 
 # <img src="docs/assets/iOxide-logo.png" width="32" height="32" align="left" alt=""> iOxide
 
+[![Release](https://img.shields.io/github/v/release/mrk1987/iOxide?filter=v*&sort=semver&label=release)](https://github.com/mrk1987/iOxide/releases/latest)
+[![Desktop pre-release](https://img.shields.io/github/v/release/mrk1987/iOxide?include_prereleases&filter=*Desktop*&sort=date&display_name=release&label=pre-release)](https://github.com/mrk1987/iOxide/releases)
 [![CI](https://github.com/mrk1987/iOxide/actions/workflows/ci.yml/badge.svg)](https://github.com/mrk1987/iOxide/actions/workflows/ci.yml)
+[![Desktop CI](https://github.com/mrk1987/iOxide/actions/workflows/desktop.yml/badge.svg)](https://github.com/mrk1987/iOxide/actions/workflows/desktop.yml)
+[![Go](https://img.shields.io/github/go-mod/go-version/mrk1987/iOxide)](go.mod)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#install)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**iOxide 1.0** is a CalDAV proxy for Proton Calendar. It logs in to your Proton
+**iOxide 1.1** is a CalDAV proxy for Proton Calendar. It logs in to your Proton
 account, decrypts your calendars locally and serves them over standard CalDAV,
 so the calendar app you already use (iOS and macOS Calendar, Thunderbird,
 DAVx⁵, ...) can read and write Proton Calendar directly.
