@@ -15,6 +15,7 @@ type PrivateKey struct {
 	PrivateKey  string
 	Fingerprint string
 	Active      int
+	Primary     int
 	Token       string
 	Signature   string
 }

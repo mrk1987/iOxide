@@ -673,14 +673,33 @@ func getOrGenerateSessionKey(keyPacket string, calKr openpgp.KeyRing, config *pa
 	return sessionKey, encryptedSessionKey, nil
 }
 
-// firstEntity returns the primary entity of a keyring: Proton lists the
-// primary key first for both user and calendar keyrings.
+// firstEntity returns the primary entity of a calendar keyring: Proton lists
+// the primary key first.
 func firstEntity(kr openpgp.KeyRing) (*openpgp.Entity, error) {
 	entities, ok := kr.(openpgp.EntityList)
 	if !ok || len(entities) == 0 {
 		return nil, errors.New("keyring is empty")
 	}
 	return entities[0], nil
+}
+
+// addressSigner returns the key that signs events in a calendar owned by the
+// address email: the first key of that address in kr, which is its primary
+// key (see primaryFirst). Proton rejects data signed with any other key,
+// including the key of another address on the same account.
+func addressSigner(kr openpgp.KeyRing, email string) (*openpgp.Entity, error) {
+	entities, ok := kr.(openpgp.EntityList)
+	if !ok {
+		return nil, errors.New("addressSigner: keyring is not a key list")
+	}
+	for _, e := range entities {
+		for _, identity := range e.Identities {
+			if identity.UserId != nil && strings.EqualFold(identity.UserId.Email, email) {
+				return e, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("addressSigner: no key for the calendar address %s", email)
 }
 
 func encryptPart(part string, key *packet.EncryptedKey, signer *openpgp.Entity, config *packet.Config) (string, error) {
@@ -741,7 +760,7 @@ func signPart(part string, signer *openpgp.Entity, config *packet.Config) (strin
 
 // makeUpdateData encrypts and signs an event for upload. oldEvent is the
 // stored version being replaced, or nil for a new event.
-func makeUpdateData(oldEvent *CalendarEvent, event ical.Event, calKr openpgp.KeyRing, userKr openpgp.KeyRing) (*CalendarEventCreateOrUpdateData, error) {
+func makeUpdateData(oldEvent *CalendarEvent, event ical.Event, calKr openpgp.KeyRing, userKeys *openpgp.Entity) (*CalendarEventCreateOrUpdateData, error) {
 	isCreate := oldEvent == nil
 
 	sharedPartCal, calendarPartCal := getEventParts(&event)
@@ -790,10 +809,6 @@ func makeUpdateData(oldEvent *CalendarEvent, event ical.Event, calKr openpgp.Key
 		data.IsOrganizer = 1
 	}
 
-	userKeys, err := firstEntity(userKr)
-	if err != nil {
-		return nil, fmt.Errorf("makeUpdateData: user keyring: %w", err)
-	}
 	if signedSharedPart, ok := sharedPart[CalendarEventCardSigned]; ok && signedSharedPart != "" {
 		signature, err := signPart(signedSharedPart, userKeys, config)
 		if err != nil {
@@ -935,6 +950,10 @@ func (c *Client) SyncCalendarEvents(calID string, writes []EventWrite, userKr op
 			return nil, fmt.Errorf("SyncCalendarEvents: %w", err)
 		}
 		memberID = member.ID
+		signer, err := addressSigner(userKr, member.Email)
+		if err != nil {
+			return nil, fmt.Errorf("SyncCalendarEvents: %w", err)
+		}
 
 		// Each update needs the stored event first; fetch them in parallel.
 		errs := make([]error, len(writes))
@@ -949,7 +968,7 @@ func (c *Client) SyncCalendarEvents(calID string, writes []EventWrite, userKr op
 				defer wg.Done()
 				sem <- struct{}{}
 				defer func() { <-sem }()
-				entries[i], errs[i] = c.prepareWrite(calID, w, calKr, userKr)
+				entries[i], errs[i] = c.prepareWrite(calID, w, calKr, signer)
 			}()
 		}
 		wg.Wait()
@@ -1010,7 +1029,7 @@ func (c *Client) SyncCalendarEvents(calID string, writes []EventWrite, userKr op
 
 // prepareWrite encrypts one event for the batch, as a create or an update
 // depending on whether Proton already has it.
-func (c *Client) prepareWrite(calID string, w EventWrite, calKr, userKr openpgp.KeyRing) (interface{}, error) {
+func (c *Client) prepareWrite(calID string, w EventWrite, calKr openpgp.KeyRing, signer *openpgp.Entity) (interface{}, error) {
 	var oldEvent *CalendarEvent
 	if w.ID != "" {
 		old, err := c.GetCalendarEvent(calID, w.ID)
@@ -1025,7 +1044,7 @@ func (c *Client) prepareWrite(calID string, w EventWrite, calKr, userKr openpgp.
 		}
 	}
 
-	data, err := makeUpdateData(oldEvent, *w.Event, calKr, userKr)
+	data, err := makeUpdateData(oldEvent, *w.Event, calKr, signer)
 	if err != nil {
 		return nil, fmt.Errorf("SyncCalendarEvents: preparing event %s: %w", w.ID, err)
 	}

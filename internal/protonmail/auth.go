@@ -354,7 +354,7 @@ func unlockPrivateKey(key *PrivateKey, userKeyRing openpgp.EntityList, passphras
 func unlockKeyRing(keys []*PrivateKey, userKeyRing openpgp.EntityList, passphraseFor keyPassphrase, used KeyPassphrases) (openpgp.EntityList, error) {
 	var keyRing openpgp.EntityList
 	var cause error
-	for _, key := range keys {
+	for _, key := range primaryFirst(keys) {
 		if key.Active != 1 {
 			continue
 		}
@@ -373,6 +373,24 @@ func unlockKeyRing(keys []*PrivateKey, userKeyRing openpgp.EntityList, passphras
 		return nil, noKeysUnlocked(cause)
 	}
 	return keyRing, nil
+}
+
+// primaryFirst returns keys with the primary key first and the rest in their
+// original order. Proton only accepts calendar data signed with an address's
+// primary key, and the signer is the first key found for that address.
+func primaryFirst(keys []*PrivateKey) []*PrivateKey {
+	sorted := make([]*PrivateKey, 0, len(keys))
+	for _, key := range keys {
+		if key.Primary == 1 {
+			sorted = append(sorted, key)
+		}
+	}
+	for _, key := range keys {
+		if key.Primary != 1 {
+			sorted = append(sorted, key)
+		}
+	}
+	return sorted
 }
 
 // keepCause remembers the first failure that a caller can act on: a stored
