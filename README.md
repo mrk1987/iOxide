@@ -8,6 +8,7 @@
 [![Desktop CI](https://github.com/mrk1987/iOxide/actions/workflows/desktop.yml/badge.svg)](https://github.com/mrk1987/iOxide/actions/workflows/desktop.yml)
 [![Go](https://img.shields.io/github/go-mod/go-version/mrk1987/iOxide)](go.mod)
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#install)
+[![OpenSSF Baseline](https://www.bestpractices.dev/projects/16952/baseline)](https://www.bestpractices.dev/projects/16952)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **iOxide 1.1** is a CalDAV proxy for Proton Calendar. It logs in to your Proton
