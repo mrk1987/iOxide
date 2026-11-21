@@ -33,3 +33,9 @@
   signing to `release.yml` before archiving, so checksums and provenance cover
   the signed files. macOS signing has no free option (Apple Developer Program,
   US$99 a year); Linux is covered by the build provenance.
+
+- [ ] **CardDAV for Proton Contacts in the same app** (planned 2026-11-21,
+  approach A: same port, `/carddav/` next to `/caldav/`). Design draft:
+  `docs/superpowers/specs/2026-11-21-carddav-design.md`. Next: Andreas answers
+  the spike question at the top of the design, approves it, then the
+  step-by-step plan is written. Nothing built yet.
