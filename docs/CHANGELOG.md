@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Desktop preview: a `screen=` value naming a built-in object property (such as
+  `constructor`) broke the page instead of showing the welcome screen
+  (CodeQL alert #8).
+
 ## [1.2.0] - 2026-11-21
 
 The desktop app leaves beta. CLI and desktop are released together as 1.2.0.
