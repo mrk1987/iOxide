@@ -22,3 +22,24 @@
   local preview page, so there is no code execution. Fix: look up with
   `Object.hasOwn(screens, view)` (or make `screens` a `Map`) and fall back to
   `welcome`.
+
+- [ ] **Code signing for Windows through SignPath's free open-source program**
+  (added 2026-11-21, not urgent). Free and works from GitHub Actions, but each
+  release needs a manual approval in SignPath, and Windows shows
+  "SignPath Foundation" as the publisher. Terms: https://signpath.org/terms.
+  Before applying, the repo needs:
+  1. A "Code signing policy" section in the README, linked from the releases,
+     with SignPath's required sentence ("Free code signing provided by
+     SignPath.io, certificate by SignPath Foundation", both linked), the roles
+     (author, reviewer and approver: mrk1987) and a privacy statement.
+  2. The privacy statement: iOxide sends nothing to networked systems other
+     than Proton and the calendar clients the user configures.
+  3. Uninstall instructions: quit, delete the files and the start-at-login
+     entry, remove bridge passwords from the credential store and the
+     `ioxide` config folder.
+  4. Windows version info in `ioxide.exe` and `ioxide-desktop.exe`: product
+     name "iOxide" and the release version, the same in every build.
+  Then apply at https://signpath.org/apply (the form needs a browser) and add
+  signing to `release.yml` before archiving, so checksums and provenance cover
+  the signed files. macOS signing has no free option (Apple Developer Program,
+  US$99 a year); Linux is covered by the build provenance.
