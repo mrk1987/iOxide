@@ -209,9 +209,9 @@ function render(preserveScroll = false) {
   const focusedAction = preserveScroll ? document.activeElement?.dataset?.action : '';
   const focusedUser = preserveScroll ? document.activeElement?.dataset?.user : '';
   const scroll = preserveScroll ? [root.querySelector('.content-panel')?.scrollTop || 0, root.querySelector('.dashboard-main')?.scrollTop || 0] : [0, 0];
-  const screens = { welcome, 'sign-in': signIn, verification, 'two-factor': () => codeForm(), 'mailbox-password': () => codeForm(true), devices, access, 'tailscale-help': tailscaleHelp, 'tailscale-forward': tailscaleForward, 'https-address': httpsAddress, clients, 'client-guide': clientGuide, connection, check };
+  const screens = new Map(Object.entries({ welcome, 'sign-in': signIn, verification, 'two-factor': () => codeForm(), 'mailbox-password': () => codeForm(true), devices, access, 'tailscale-help': tailscaleHelp, 'tailscale-forward': tailscaleForward, 'https-address': httpsAddress, clients, 'client-guide': clientGuide, connection, check }));
   if (view === 'dashboard' || view === 'settings') root.innerHTML = dashboardShell(view === 'settings' ? settings() : dashboardContent());
-  else root.innerHTML = `<div class="app-shell">${brand()}<main class="content-panel"><div class="content-body">${notice(error || stateError(), 'error')}${(Object.prototype.hasOwnProperty.call(screens, view) ? screens[view] : welcome)()}</div>${toast()}</main></div>`;
+  else root.innerHTML = `<div class="app-shell">${brand()}<main class="content-panel"><div class="content-body">${notice(error || stateError(), 'error')}${(screens.get(view) || welcome)()}</div>${toast()}</main></div>`;
   root.setAttribute('aria-busy', String(busy));
   if (!message) { clearTimeout(toastTimer); toastFor = ''; }
   else if (toastFor !== message) { toastFor = message; clearTimeout(toastTimer); toastTimer = setTimeout(() => { message = ''; render(true); }, 6000); }
